@@ -1539,7 +1539,10 @@ _DL = {
 #: 我原先把幻灯片写死成 pdf，用户拿不到可编辑的 PPTX。
 _DL_FORMATS = {
     # 顺序即优先级：PPTX 可编辑，默认给它
-    "slide_deck": {"pptx": "pptx", "pdf": "pdf"},
+    # outline 不是 SDK 的下载格式，是我们自己从 slides[].text 拼的 Markdown。
+    # Google 的每页幻灯片本质是一张图（protobuf 的 Slide 只有 image 字段），
+    # PPTX 里装的也是整页图片 —— 文字改不了。大纲才是真能编辑的东西。
+    "slide_deck": {"pptx": "pptx", "pdf": "pdf", "outline": "md"},
     "quiz": {"markdown": "md", "json": "json", "html": "html"},
     "flashcards": {"markdown": "md", "json": "json", "html": "html"},
 }
@@ -1635,7 +1638,49 @@ async def api_download_artifact(notebook_id: str, artifact_id: str, format: str 
         fmt = format if format in choices else next(iter(choices))
         ext = choices[fmt]      # 扩展名必须跟着格式走
     stem = _safe_name(getattr(art, "title", "") or tv, tv)
+
+    # 大纲由本地拼装，不走 SDK 的下载接口
+    if tv == "slide_deck" and fmt == "outline":
+        return _slides_outline(art, stem)
+
     return await _download(notebook_id, method, ext, stem, artifact_id, fmt)
+
+
+def _slides_outline(art: Any, stem: str):
+    """把幻灯片每页的文字导成 Markdown。
+
+    PPTX 每页是整页图片，文字不可编辑；但 SDK 的 ArtifactSlide
+    带有 text / alt_text，可以还原成能改的文本大纲。
+    """
+    slides = getattr(art, "slides", None) or []
+    if not slides:
+        raise HTTPException(
+            404,
+            "这个幻灯片没有可提取的文字。可能是旧版生成的，"
+            "重新生成一次通常就有了",
+        )
+
+    lines = [f"# {getattr(art, 'title', '') or '幻灯片大纲'}", ""]
+    for i, sl in enumerate(slides, 1):
+        text = (getattr(sl, "text", "") or "").strip()
+        alt = (getattr(sl, "alt_text", "") or "").strip()
+        lines.append(f"## 第 {i} 页")
+        if text:
+            lines.append("")
+            lines.append(text)
+        if alt and alt != text:
+            lines.append("")
+            lines.append(f"> 画面描述：{alt}")
+        if not text and not alt:
+            lines.append("")
+            lines.append("（这一页没有可提取的文字）")
+        lines.append("")
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    path = OUT / f"{stem}_大纲.md"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return FileResponse(path, filename=path.name,
+                        media_type="text/markdown; charset=utf-8")
 
 
 #: 生成类型 -> 产物类型，用于查可选格式
@@ -1653,6 +1698,19 @@ async def api_download(notebook_id: str, kind: str, format: str | None = None):
     if choices:
         fmt = format if format in choices else next(iter(choices))
         ext = choices[fmt]
+
+    if kind == "slides" and fmt == "outline":
+        # 需要拿到产物对象才能读 slides[].text
+        client = await get_client()
+        arts = await client.artifacts.list(notebook_id) or []
+        decks = [x for x in arts
+                 if getattr(getattr(x, "kind", None), "value", "") == "slide_deck"]
+        if not decks:
+            raise HTTPException(404, "还没有生成好的幻灯片")
+        newest = max(decks, key=lambda x: getattr(x, "created_at", None) or 0)
+        return _slides_outline(newest, _safe_name(
+            getattr(newest, "title", "") or "幻灯片", "幻灯片"))
+
     return await _download(notebook_id, method, ext,
                            f"{kind}_{notebook_id[:8]}", None, fmt)
 
@@ -1665,8 +1723,17 @@ async def api_artifacts(notebook_id: str) -> list[dict[str, Any]]:
         items = await client.artifacts.list(notebook_id) or []
     except Exception:
         return []
+    # 最新的排最前。Google 返回的顺序不保证，
+    # 用 created_at 倒序；缺时间的排到最后而不是最前。
+    def _when(x: Any) -> float:
+        dt = getattr(x, "created_at", None) or getattr(x, "last_modified_at", None)
+        try:
+            return dt.timestamp()
+        except Exception:
+            return 0.0
+
     out = []
-    for x in items:
+    for x in sorted(items, key=_when, reverse=True):
         t = getattr(x, "kind", None) or getattr(x, "type", None)
         urls = getattr(x, "media_urls", None) or []
         out.append(

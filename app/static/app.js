@@ -1487,8 +1487,12 @@ const TYPE_EXT = {
 //: 幻灯片的 PPTX 是可编辑的，之前只给了 PDF。
 //: [格式值, 按钮文字, 悬停说明]。按钮文字要短 —— 侧栏很窄。
 const MULTI_FMT = {
-  slide_deck: [["pptx", "PPTX", "可编辑的 PowerPoint 文件"],
-               ["pdf", "PDF", "只读，方便分享打印"]],
+  // 说明：Google 那边每页幻灯片就是一张图（protobuf 里 Slide 只有
+  // image 字段），所以 PPTX 里装的也是整页图片，改不了上面的字。
+  // 真正能改文字的是「大纲」——从每页的 text 提取出来的 Markdown。
+  slide_deck: [["pptx", "PPTX", "PowerPoint 文件，每页是整页图片，文字不可改"],
+               ["pdf", "PDF", "只读，方便分享打印"],
+               ["outline", "大纲", "提取每页文字为 Markdown，可自由编辑"]],
   quiz: [["markdown", "MD", "Markdown 文本"],
          ["html", "网页", "可直接打开的 HTML"],
          ["json", "JSON", "结构化数据"]],
