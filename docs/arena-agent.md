@@ -153,11 +153,13 @@ MCP 侧默认注册 33 个工具（实测 fastmcp 3.4.2）：`chat_ask` / `sourc
 
 ## 6. 还没做的
 
-- **大产物回传**（GitHub Release / Artifact 通道）
-- **除 `research_report` 之外的工单 kind**：播客、幻灯片、测验、思维导图。
-  骨架已经通用（`build_plan` 里加一个分支即可），但没写、没测，所以现在不声称支持。
+- **大产物回传**（GitHub Release / Artifact 通道）—— mp3 / mp4 / pptx 不适合走 Git，
+  目前只回传小文件。
+- **视频 / 信息图 / 数据表 / 思维导图 / 闪卡** 工单 kind。骨架已通用
+  （`KINDS` 表里加一项即可），但没写、没测，所以现在不声称支持。
 - **笔记本自动复用**：目前工单要么新建、要么显式给 id。按标题模糊匹配复用还没做。
-- **`awesome-notebookLM-prompts` 的 17 套幻灯片风格中文化**：素材已读过，还没落进仓库。
+- **真实 API 端到端**：四种工单都在 mock CLI 上验证过编排逻辑，但**没有**在真实
+  NotebookLM 上跑通过 —— 沙箱打不通 Google。这是当前最大的未验证项。
 
 ---
 
@@ -186,3 +188,41 @@ NotesAPI.create(notebook_id, title, content) -> Note
    所以 `tools/nbjob.py` 的校验集合是 4 个，跟 CLI 对齐，不跟枚举对齐。
 2. `wait_all_until_ready` 返回的是 `list[Source | 异常对象]`，**不是**清一色 `Source`。
    直接当 Source 用会在失败来源上炸 —— 示例里显式分流了。
+
+---
+
+## 8. CLI 参数核对记录
+
+`tools/nbjob.py` 的 `KINDS` 表里每一个可选值，都是对着已安装的 **0.8.1** 的 `--help` 输出
+逐个抄的，不是从上游 README 或 SKILL.md 抄的 —— 这两者会和实际 CLI 脱节（上面第 7 节的
+`CONCEPT_EXPLANATION` 就是一例）。
+
+| 命令 | 参数与可选值（实测） |
+|---|---|
+| `generate report` | `--format [briefing-doc\|study-guide\|blog-post\|custom]`（默认 briefing-doc）、`--append`、`--prompt-file`、`--language` |
+| `generate audio` | `--format [deep-dive\|brief\|critique\|debate]`、`--length [short\|default\|long]`、`--language`、`--prompt-file` |
+| `generate slide-deck` | `--format [detailed\|presenter]`、`--length [default\|short]`、`--language`、`--prompt-file` |
+| `generate quiz` | `--quantity [fewer\|standard\|more]`、`--difficulty [easy\|medium\|hard]`（**没有** description 位置参数、**没有** `--language`） |
+| `download slide-deck` | `--format [pdf\|pptx]`（默认 pdf）、`-a`、`-n`、`--all`、`--name`、`--dry-run`、`--force`、`--no-clobber` |
+| `download quiz` | `--format [json\|markdown\|html]`（默认 json）、同上 |
+| `download audio` | `-a`、`-n`、`--latest/--earliest/--all`、`--name`（**没有** `--format`） |
+
+三条由此定下来的实现决策：
+
+1. **`quiz` 不给 `--language`**。它的 `--help` 里没有这个参数，硬加会被 click 拒。
+   所以 `build_plan` 里语言只对 report / audio / slide-deck 生效。
+2. **`quiz` 没有 description 位置参数**，所以它的 `prompt_mode` 是 `"none"`，
+   工单里给了 prompt 也不会拼进命令。
+3. **`download audio` 没有 `--format`**，所以 `KINDS["podcast"]` 里没有 `download_format`，
+   下载段不会拼这个 flag —— 而 slide-deck / quiz 有。
+
+复现核对：
+
+```bash
+for c in report audio slide-deck quiz; do
+  echo "=== generate $c ==="; .venv/bin/notebooklm generate $c --help | grep -E '^  --'
+done
+for c in audio slide-deck quiz; do
+  echo "=== download $c ==="; .venv/bin/notebooklm download $c --help | sed -n '/^Options/,$p' | grep -E '^  -'
+done
+```

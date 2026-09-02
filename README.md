@@ -69,6 +69,7 @@ git push                                        # 交给你本机的 worker
 | `scripts/worker.sh` | 路线 B 的外部 worker（跑在你本机） |
 | `scripts/nb` `.ps1` | `notebooklm` CLI 薄封装（Windows / Linux 两套，参数相同） |
 | `scripts/agent-mcp` | 项目级 MCP 入口 |
+| `prompts/slides/` | 中文化幻灯片风格库（6 种），配 `generate.prompt_file` 用 |
 | `examples/` | Python API 版示例（看懂链路用） |
 | `out/` | 产物落盘，已 gitignore |
 | `docs/调研/` | 六个同类仓库的逐文件分析 + 沙箱实测 + 方案讨论 |
@@ -88,7 +89,20 @@ python3 tools/nbjob.py plan jobs/samples/report-demo.job.json
 `out/`。每一步的 id 都显式传给下一步（ID-pinned），失败会**立即停在那一步**，
 不会继续发起生成任务白烧配额。
 
-换成播客 / 幻灯片 / 测验，只是换个 `kind` 和产物类型 —— 骨架不变。
+## 四种产物
+
+骨架完全一样，只是最后三步的命令形状不同：
+
+| kind | 产物 | 落盘 | 样例 |
+|---|---|---|---|
+| `research_report` | 简报 / 学习指南 / 博客稿 | `.md` | `jobs/samples/report-demo.job.json` |
+| `podcast` | 音频概览 | `.m4a` | `jobs/samples/podcast-demo.job.json` |
+| `slides` | 幻灯片 | `.pdf` / `.pptx` | `jobs/samples/slides-demo.job.json` |
+| `quiz` | 测验 | `.md` / `.json` / `.html` | `jobs/samples/quiz-demo.job.json` |
+
+幻灯片还配了一套**中文化风格库**（`prompts/slides/`，6 种风格），素材来自
+awesome-notebookLM-prompts，改写后对齐了 notebooklm-py 的真实接口 ——
+比如 slide-deck **没有** `--orientation` 参数，竖版只能写进 prompt。
 
 ---
 

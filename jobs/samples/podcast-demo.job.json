@@ -1,0 +1,16 @@
+{
+  "id": "pod-demo-0001",
+  "kind": "podcast",
+  "notebook": { "title": "播客：NotebookLM 开源生态" },
+  "sources": [
+    { "type": "file", "value": "docs/调研/01-生态分析.md" },
+    { "type": "file", "value": "docs/调研/02-环境实测.md" }
+  ],
+  "generate": {
+    "format": "deep-dive",
+    "length": "default",
+    "language": "zh_Hans",
+    "prompt": "聚焦两条路线的取舍：为什么直连更强但受限，为什么工单中继现在就能跑。"
+  },
+  "output": { "dir": "out" }
+}

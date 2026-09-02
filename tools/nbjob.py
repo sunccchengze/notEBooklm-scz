@@ -35,14 +35,72 @@ ROOT = Path(__file__).resolve().parent.parent
 NB = str(ROOT / "scripts" / "nb")
 NB_PS1 = str(ROOT / "scripts" / "nb.ps1")
 
-# 上游 SKILL.md 的「Generation Types」表 + 处理时间表
-REPORT_FORMATS = {"briefing-doc", "study-guide", "blog-post", "custom"}
 SOURCE_TYPES = {"url", "file", "text", "youtube"}
+
+# 上游 SKILL.md 的处理时间表（秒）
 TIMEOUTS = {
     "source_wait": 600,      # 资料索引 30s–10min
-    "report_wait": 900,      # 报告 5–15min
+    "report_wait": 900,      # 报告 / 数据表 5–15min
+    "quiz_wait": 900,        # 测验 / 闪卡 5–15min
     "audio_wait": 1200,      # 播客 10–20min
+    "slides_wait": 900,      # 幻灯片 5–15min（上游未单列，取生成类中位值）
     "video_wait": 2700,      # 视频 15–45min
+}
+
+# 下列每个可选值都对着已安装的 notebooklm-py 0.8.1 的 `--help` 逐个核对过，
+# 不是从上游 README 抄的 —— 详见 docs/arena-agent.md 的「CLI 参数核对」。
+KINDS: dict[str, dict[str, Any]] = {
+    "research_report": {
+        "gen": ["generate", "report"],
+        "wait": TIMEOUTS["report_wait"],
+        "download": ["download", "report"],
+        "ext": "md",
+        "options": {
+            "format": {"choices": {"briefing-doc", "study-guide", "blog-post", "custom"},
+                       "default": "briefing-doc"},
+        },
+        "prompt_mode": "append-or-positional",   # custom 走位置参数，其余走 --append
+        "needs_sources_for_gen": False,
+    },
+    "podcast": {
+        "gen": ["generate", "audio"],
+        "wait": TIMEOUTS["audio_wait"],
+        "download": ["download", "audio"],
+        "ext": "m4a",
+        "options": {
+            "format": {"choices": {"deep-dive", "brief", "critique", "debate"},
+                       "default": "deep-dive"},
+            "length": {"choices": {"short", "default", "long"}, "default": "default"},
+        },
+        "prompt_mode": "positional",
+        "needs_sources_for_gen": True,     # 上游：source-less 对 audio 会直接报错
+    },
+    "slides": {
+        "gen": ["generate", "slide-deck"],
+        "wait": TIMEOUTS["slides_wait"],
+        "download": ["download", "slide-deck"],
+        "ext": "pdf",
+        "options": {
+            "format": {"choices": {"detailed", "presenter"}, "default": "detailed"},
+            "length": {"choices": {"default", "short"}, "default": "default"},
+            "download_format": {"choices": {"pdf", "pptx"}, "default": "pdf"},
+        },
+        "prompt_mode": "positional",
+        "needs_sources_for_gen": False,
+    },
+    "quiz": {
+        "gen": ["generate", "quiz"],
+        "wait": TIMEOUTS["quiz_wait"],
+        "download": ["download", "quiz"],
+        "ext": "md",
+        "options": {
+            "quantity": {"choices": {"fewer", "standard", "more"}, "default": "standard"},
+            "difficulty": {"choices": {"easy", "medium", "hard"}, "default": "medium"},
+            "download_format": {"choices": {"json", "markdown", "html"}, "default": "markdown"},
+        },
+        "prompt_mode": "none",             # quiz 没有 description 位置参数
+        "needs_sources_for_gen": True,
+    },
 }
 
 
@@ -61,8 +119,10 @@ def validate(job: dict[str, Any]) -> None:
     """校验工单。刻意严格：宁可现在报错，也不要跑到一半才失败。"""
     _need(isinstance(job, dict), "工单必须是 JSON object")
     _need(bool(job.get("id")), "缺少 id —— 结果要靠它对账")
-    _need(job.get("kind") == "research_report",
-          f"kind 必须是 'research_report'，收到 {job.get('kind')!r}")
+
+    kind = job.get("kind")
+    _need(kind in KINDS, f"kind 必须是 {sorted(KINDS)} 之一，收到 {kind!r}")
+    spec = KINDS[kind]
 
     nb = job.get("notebook") or {}
     _need(isinstance(nb, dict), "notebook 必须是 object")
@@ -80,13 +140,32 @@ def validate(job: dict[str, Any]) -> None:
         if s["type"] == "file":
             _need(Path(val).is_file(), f"sources[{i}].value 指向的文件不存在: {val}")
 
-    rep = job.get("report") or {}
-    _need(isinstance(rep, dict), "report 必须是 object")
-    fmt = rep.get("format", "briefing-doc")
-    _need(fmt in REPORT_FORMATS, f"report.format 必须是 {sorted(REPORT_FORMATS)} 之一，收到 {fmt!r}")
-    if fmt == "custom":
+    # 生成参数：逐个对着 KINDS 里的 choices 校验
+    opts = job.get("generate") or {}
+    _need(isinstance(opts, dict), "generate 必须是 object")
+    for name, meta in spec["options"].items():
+        if name.startswith("download_"):
+            continue                      # 下载格式在 download 段校验
+        if name in opts:
+            _need(opts[name] in meta["choices"],
+                  f"generate.{name} 必须是 {sorted(meta['choices'])} 之一，收到 {opts[name]!r}")
+
+    dl = job.get("download") or {}
+    _need(isinstance(dl, dict), "download 必须是 object")
+    if "download_format" in spec["options"] and "format" in dl:
+        meta = spec["options"]["download_format"]
+        _need(dl["format"] in meta["choices"],
+              f"download.format 必须是 {sorted(meta['choices'])} 之一，收到 {dl['format']!r}")
+
+    # prompt：positional 类必须有内容才生成得出想要的东西；custom report 更是硬要求
+    prompt = opts.get("prompt")
+    prompt_file = opts.get("prompt_file")
+    _need(not (prompt and prompt_file), "generate.prompt 和 generate.prompt_file 不能同时给")
+    if prompt_file:
+        _need(Path(prompt_file).is_file(), f"generate.prompt_file 不存在: {prompt_file}")
+    if kind == "research_report" and opts.get("format") == "custom":
         # 上游坑：--append 在 --format custom 下被静默忽略，prompt 必须走位置参数
-        _need(bool(rep.get("prompt")), "report.format=custom 时必须给 report.prompt")
+        _need(bool(prompt or prompt_file), "generate.format=custom 时必须给 prompt 或 prompt_file")
 
     for i, q in enumerate(job.get("ask") or []):
         _need(isinstance(q, str) and q.strip(), f"ask[{i}] 必须是非空字符串")
@@ -117,7 +196,6 @@ def _nb(*args: str) -> list[str]:
 def build_plan(job: dict[str, Any]) -> list[Step]:
     """把工单翻译成有序命令。纯函数，不碰网络 —— 所以 `plan` 子命令离线可跑。"""
     nb = job.get("notebook") or {}
-    rep = job.get("report") or {}
     steps: list[Step] = []
 
     # 1) 笔记本：复用已有 or 新建
@@ -156,37 +234,77 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
             capture=f"answer_{i}", jq_path=".", needs=["notebook_id"],
         ))
 
-    # 5) 生成报告
-    fmt = rep.get("format", "briefing-doc")
-    gen = ["generate", "report", "--format", fmt, "-n", "{notebook_id}", "--json"]
-    prompt = rep.get("prompt")
-    if prompt:
-        if fmt == "custom":
-            gen.insert(2, prompt)        # custom 必须走位置参数
+    # 5) 生成产物 —— 由 kind 决定命令形状
+    spec = KINDS[job["kind"]]
+    opts = job.get("generate") or {}
+    gen = list(spec["gen"])
+    shown: list[str] = []
+
+    # 5a) 位置参数 / --append / --prompt-file
+    prompt = opts.get("prompt")
+    prompt_file = opts.get("prompt_file")
+    mode = spec["prompt_mode"]
+    if mode == "positional" and (prompt or prompt_file):
+        if prompt:
+            gen.append(prompt)
+            shown.append("prompt")
         else:
-            gen += ["--append", prompt]  # 内置模板只能用 --append
-    if rep.get("language"):
-        gen += ["--language", rep["language"]]
+            gen += ["--prompt-file", prompt_file]
+            shown.append(f"prompt-file={Path(prompt_file).name}")
+    elif mode == "append-or-positional":
+        if opts.get("format") == "custom":
+            # 上游坑：--append 在 --format custom 下被静默忽略，必须走位置参数
+            if prompt:
+                gen.append(prompt)
+                shown.append("prompt(custom)")
+            elif prompt_file:
+                gen += ["--prompt-file", prompt_file]
+                shown.append("prompt-file(custom)")
+        elif prompt:
+            gen += ["--append", prompt]
+            shown.append("append")
+
+    # 5b) 枚举选项（format / length / quantity / difficulty）
+    for name, meta in spec["options"].items():
+        if name.startswith("download_"):
+            continue
+        val = opts.get(name, meta["default"])
+        gen += [f"--{name.replace('_', '-')}", val]
+        shown.append(f"{name}={val}")
+
+    # 5c) 语言（report / audio / slide-deck 有；quiz 没有）
+    if job["kind"] in ("research_report", "podcast", "slides") and opts.get("language"):
+        gen += ["--language", opts["language"]]
+        shown.append(f"language={opts['language']}")
+
+    gen += ["-n", "{notebook_id}", "--json"]
     steps.append(Step(
-        label=f"生成报告（format={fmt}）",
+        label=f"生成 {job['kind']}（{', '.join(shown) or '默认参数'}）",
         argv=_nb(*gen), capture="task_id", jq_path="task_id", needs=["notebook_id"],
     ))
 
     # 6) 等生成
     steps.append(Step(
-        label="等待报告生成完成",
+        label=f"等待 {job['kind']} 生成完成",
         argv=_nb("artifact", "wait", "{task_id}", "-n", "{notebook_id}",
-                 "--timeout", str(TIMEOUTS["report_wait"])),
+                 "--timeout", str(spec["wait"])),
         ok_codes=(0, 2), needs=["notebook_id", "task_id"],
     ))
 
     # 7) 下载
+    dl = job.get("download") or {}
     outdir = Path((job.get("output") or {}).get("dir", "out"))
-    outfile = str(outdir / f"{job['id']}-report.md")
+    ext = dl.get("format", spec["options"].get("download_format", {}).get("default", spec["ext"]))
+    if job["kind"] == "quiz" and ext == "markdown":
+        ext = "md"
+    outfile = str(outdir / f"{job['id']}-{job['kind']}.{ext}")
+    dlcmd = list(spec["download"]) + [outfile]
+    if "download_format" in spec["options"]:
+        dlcmd += ["--format", dl.get("format", spec["options"]["download_format"]["default"])]
+    dlcmd += ["-a", "{task_id}", "-n", "{notebook_id}"]
     steps.append(Step(
-        label=f"下载报告 → {outfile}",
-        argv=_nb("download", "report", outfile, "-a", "{task_id}", "-n", "{notebook_id}"),
-        capture="report_file", needs=["notebook_id", "task_id"],
+        label=f"下载 {job['kind']} → {outfile}",
+        argv=_nb(*dlcmd), capture="artifact_file", needs=["notebook_id", "task_id"],
     ))
 
     return steps
