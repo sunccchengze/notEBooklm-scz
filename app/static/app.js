@@ -36,8 +36,7 @@ function toast(msg, isErr) {
   tt = setTimeout(() => (t.className = "toast"), isErr ? 5200 : 2600);
 }
 
-/* 单引号也必须转义 —— onclick="fn('${esc(...)}')" 里若混入 '
-   会提前闭合属性，按钮直接失效（例如标题 "Andrew Ng's ..."）。 */
+/* 单引号一并转义：值要放进 HTML 属性，属性里出现裸的引号会提前闭合。 */
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -124,7 +123,7 @@ function renderNotebooks() {
   const q = $("search").value.trim().toLowerCase();
   const list = q ? NBS.filter((n) => n.title.toLowerCase().includes(q)) : NBS;
   $("nbList").innerHTML = list.length
-    ? list.map((n) => `<div class="nb ${CUR?.id === n.id ? "on" : ""}" onclick="pick('${esc(n.id)}')">
+    ? list.map((n) => `<div class="nb ${CUR?.id === n.id ? "on" : ""}" data-act="pick" data-a0="${esc(n.id)}">
         <span class="nb-emo">${esc(n.emoji)}</span>
         <div class="nb-body">
           <div class="nb-title">${esc(n.title)}</div>
@@ -132,9 +131,9 @@ function renderNotebooks() {
         </div>
         <span class="nb-ops">
           <button class="x" title="重命名"
-            onclick="event.stopPropagation();renameNotebook('${n.id}')">✎</button>
+            data-act="renameNotebook" data-stop="1" data-a0="${n.id}">✎</button>
           <button class="x" title="删除笔记本"
-            onclick="event.stopPropagation();delNotebook('${n.id}')">✕</button>
+            data-act="delNotebook" data-stop="1" data-a0="${n.id}">✕</button>
         </span></div>`).join("")
     : '<div class="empty">没有匹配的笔记本</div>';
   scNb?.sync();
@@ -192,7 +191,7 @@ async function loadHistory() {
 
   $("chat").innerHTML =
     `<div class="hist-tip">以下是过去的对话
-       <button class="mini danger" onclick="clearHistory()">清空</button>
+       <button class="mini danger" data-act="clearHistory">清空</button>
      </div>` +
     turns.map((t) => renderTurn(t.q, t.a)).join("");
   // 历史不做入场动画，直接落到底部
@@ -230,8 +229,8 @@ function renderTurn(q, a) {
       <div class="bubble"><div class="who">Notebook</div>
         <div class="text">${fmt(a)}
           <div class="msg-actions">
-            <button class="mini" onclick="copyTxt(this)">复制</button>
-            <button class="mini" onclick="saveNote(this)">存为笔记</button>
+            <button class="mini" data-act="copyTxt">复制</button>
+            <button class="mini" data-act="saveNote">存为笔记</button>
           </div>
         </div></div></div>`);
   }
@@ -258,7 +257,7 @@ function renderSuggest(items) {
     // 副标题只在中文时展示，英文原文仅作 tooltip，避免界面中英夹杂
     const sub = oneline(x.en ? "" : prompt);
     const showSub = sub && sub !== title && sub.length <= 40;
-    return `<button class="sg" data-p="${esc(prompt)}" onclick="useSuggest(this)"
+    return `<button class="sg" data-p="${esc(prompt)}" data-act="useSuggest"
               title="${esc(oneline(prompt))}">
         <div class="sg-t">${esc(title || oneline(prompt).slice(0, 16))}</div>
         ${showSub ? `<div class="sg-p">${esc(sub)}</div>` : ""}
@@ -331,8 +330,8 @@ async function send() {
         `</details>`;
     }
     html += `<div class="msg-actions">
-        <button class="mini" onclick="copyTxt(this)">复制</button>
-        <button class="mini" onclick="saveNote(this)">存为笔记</button>
+        <button class="mini" data-act="copyTxt">复制</button>
+        <button class="mini" data-act="saveNote">存为笔记</button>
       </div>`;
     p.querySelector(".text").innerHTML = html;
     p.dataset.raw = r.answer;
@@ -451,10 +450,10 @@ async function loadSources() {
               : x.status === "error" ? "处理失败" : x.words ? x.words + " 词" : "就绪"}</div>
           </div>
           <span class="nb-ops">
-            <button class="x" onclick="srcGuide('${esc(x.id)}')" title="AI 摘要">☰</button>
-            <button class="x" onclick="srcRefresh('${esc(x.id)}')" title="重新抓取">↻</button>
-            <button class="x" onclick="srcRename('${esc(x.id)}')" title="重命名">✎</button>
-            <button class="x" onclick="delSource('${esc(x.id)}')" title="删除">✕</button>
+            <button class="x" data-act="srcGuide" data-a0="${esc(x.id)}" title="AI 摘要">☰</button>
+            <button class="x" data-act="srcRefresh" data-a0="${esc(x.id)}" title="重新抓取">↻</button>
+            <button class="x" data-act="srcRename" data-a0="${esc(x.id)}" title="重命名">✎</button>
+            <button class="x" data-act="delSource" data-a0="${esc(x.id)}" title="删除">✕</button>
           </span>
         </div>`).join("")
       : '<div class="empty">还没有资料</div>';
@@ -546,7 +545,7 @@ async function srcGuide(id) {
       html += `<p class="sec-label" style="margin-top:16px">这份资料能回答</p>` +
         g.questions.map((q) =>
           `<button class="sg" style="width:100%;margin-bottom:6px"
-             data-p="${esc(q)}" onclick="useSuggest(this);closeInfo()">
+             data-p="${esc(q)}" data-act="useSuggest" data-then="closeInfo">
              <div class="sg-t">${esc(q)}</div></button>`).join("");
     }
     html += `</div>`;
@@ -577,8 +576,8 @@ async function loadNotes() {
             <div class="item-sub">${esc(oneline(x.content).slice(0, 70))}</div>
           </div>
           <span class="nb-ops">
-            <button class="x" onclick="viewNote('${esc(x.id)}')" title="查看">☰</button>
-            <button class="x" onclick="delNote('${esc(x.id)}')" title="删除">✕</button>
+            <button class="x" data-act="viewNote" data-a0="${esc(x.id)}" title="查看">☰</button>
+            <button class="x" data-act="delNote" data-a0="${esc(x.id)}" title="删除">✕</button>
           </span>
         </div>`).join("")
       : '<div class="empty">还没有笔记<br>在回答下方点「存为笔记」</div>';
@@ -657,7 +656,7 @@ async function pollResearch(tid, nbId) {
               <div class="rsrc-u">${esc(x.url)}</div>
             </div></label>`).join("") +
         `<div class="add-row" style="margin-top:12px">
-           <button style="flex:1" onclick="importResearch()">导入选中的来源</button>
+           <button style="flex:1" data-act="importResearch">导入选中的来源</button>
          </div>`;
       scPages.research?.sync();
       return;
@@ -761,7 +760,7 @@ async function gen(kind) {
       <div class="seg wrap" data-key="${f.key}">` +
       f.opts.map(([v, t]) =>
         `<button data-v="${v}" class="${v === f.def ? "on" : ""}"
-           onclick="pickGen(this)">${t}</button>`).join("") +
+           data-act="pickGen">${t}</button>`).join("") +
       `</div>`;
   });
 
@@ -891,7 +890,7 @@ async function loadLabels() {
     $("labelList").innerHTML = ls.length
       ? ls.map((l) => `<span class="tag">
            ${esc(l.emoji || "")} ${esc(l.name)}
-           <button onclick="delLabel('${esc(l.id)}')" title="删除标签">✕</button>
+           <button data-act="delLabel" data-a0="${esc(l.id)}" title="删除标签">✕</button>
          </span>`).join("")
       : '<div class="empty" style="padding:12px">还没有标签</div>';
   } catch { $("labelList").innerHTML = ""; }
@@ -1031,11 +1030,11 @@ async function loadArtifacts() {
           <div class="item-sub">${TYPE_CN[x.type] || x.type}${dur} · ${esc(x.created)}</div>
         </div>
         <span class="nb-ops">
-          ${x.done ? `<button class="x" onclick="artifactPrompt('${esc(x.id)}')" title="查看生成提示词">☰</button>` : ""}
-          ${x.done ? `<button class="x" onclick="exportArtifact('${esc(x.id)}','${esc(x.title)}')" title="导出到 Google 文档">↗</button>` : ""}
-          ${x.failed ? `<button class="x" onclick="retryArtifact('${esc(x.id)}')" title="重试">↻</button>` : ""}
-          <button class="x" onclick="renameArtifact('${esc(x.id)}')" title="重命名">✎</button>
-          <button class="x" onclick="delArtifact('${esc(x.id)}')" title="删除">✕</button>
+          ${x.done ? `<button class="x" data-act="artifactPrompt" data-a0="${esc(x.id)}" title="查看生成提示词">☰</button>` : ""}
+          ${x.done ? `<button class="x" data-act="exportArtifact" data-a0="${esc(x.id)}" data-a1="${esc(x.title)}" title="导出到 Google 文档">↗</button>` : ""}
+          ${x.failed ? `<button class="x" data-act="retryArtifact" data-a0="${esc(x.id)}" title="重试">↻</button>` : ""}
+          <button class="x" data-act="renameArtifact" data-a0="${esc(x.id)}" title="重命名">✎</button>
+          <button class="x" data-act="delArtifact" data-a0="${esc(x.id)}" title="删除">✕</button>
         </span></div>`;
     }).join("");
     scPages.studio?.sync();
@@ -1107,7 +1106,7 @@ async function openShare() {
       ? r.users.map((u) => `<div class="item">
           <div class="item-body"><div class="item-title">${esc(u.email)}</div>
           <div class="item-sub">${u.role === "EDITOR" ? "可编辑" : "可查看"}</div></div>
-          <button class="x" onclick="delShareUser('${esc(u.email)}')" title="移除">✕</button>
+          <button class="x" data-act="delShareUser" data-a0="${esc(u.email)}" title="移除">✕</button>
         </div>`).join("")
       : '<div class="empty" style="padding:12px">还没有共享给别人</div>';
   } catch (e) {
@@ -1158,8 +1157,36 @@ function switchTab(name) {
 $("urlInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addUrl(); });
 $("rqInput").addEventListener("keydown", (e) => { if (e.key === "Enter") startResearch(); });
 
+/* ------------------------------------------------------------------
+   事件委托
+   动态列表不再用内联 onclick —— HTML 属性会先解码实体，
+   标题里的单引号（如 Andrew Ng 后面那个撇号）会截断 JS 字符串，
+   导致整行按钮失效。
+   改为把参数放进 data-*，由 HTML 属性转义保证安全。
+   ------------------------------------------------------------------ */
+const ACTIONS = {};
+
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-act]");
+  if (!el) return;
+  const fn = ACTIONS[el.dataset.act];
+  if (!fn) return;
+  if (el.dataset.stop) e.stopPropagation();
+
+  // 需要元素本身的（copyTxt / saveNote / pickGen / useSuggest）
+  if (["copyTxt", "saveNote", "pickGen", "useSuggest"].includes(el.dataset.act)) {
+    fn(el);
+  } else {
+    const args = [];
+    for (let i = 0; el.dataset["a" + i] !== undefined; i++) args.push(el.dataset["a" + i]);
+    fn(...args);
+  }
+  if (el.dataset.then && ACTIONS[el.dataset.then]) ACTIONS[el.dataset.then]();
+});
+
 // 暴露给 HTML 内联事件
-Object.assign(window, {
+Object.assign(ACTIONS, {
+
   pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
   setMode, startResearch, importResearch, gen, openFolder,
@@ -1173,5 +1200,7 @@ Object.assign(window, {
   loadArtifacts, delArtifact, renameArtifact, retryArtifact,
   artifactPrompt, exportArtifact, openShare, closeShare, addShareUser, delShareUser,
 });
+
+Object.assign(window, ACTIONS);
 
 boot();
