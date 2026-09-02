@@ -77,6 +77,14 @@ def _friendly(exc: Exception) -> tuple[int, str, str]:
         return 502, "连不上 Google", "检查网络代理后重试"
     if "quota" in low or "rate" in low or "429" in low:
         return 429, "触发频率限制", "稍等几分钟再试"
+    if "short videos" in low or "fixed visual style" in low:
+        return 400, "短视频不支持自选画面风格", "短视频的风格由 Google 固定，请不要设置风格或画面描述"
+    if "cinematic" in low and "style_prompt" in low:
+        return 400, "电影感视频不支持画面描述", "去掉画面描述后重试"
+    if "style_prompt is required" in low:
+        return 400, "缺少画面描述", "选了「自定义」风格就必须填画面描述"
+    if "style_prompt requires" in low:
+        return 400, "画面描述只对自定义风格生效", "把风格改成「自定义」，或清空画面描述"
     return 500, "操作失败", t[:300]
 
 
@@ -754,11 +762,32 @@ async def api_generate(body: GenerateBody) -> dict[str, Any]:
             audio_length=_enum(AudioLength, body.audio_length),
         )
     elif k == "video":
+        # Google 对视频参数组合有硬性约束，不满足会直接抛错。
+        # 前端已做联动，这里再兜一层，顺便把错误翻成中文。
+        vfmt = _enum(VideoFormat, body.video_format)
+        vstyle = _enum(VideoStyle, body.video_style)
+        sprompt = (body.style_prompt or "").strip() or None
+
+        # 注意 VideoStyle.CUSTOM.value == 0，是假值，判断必须用 is / ==，
+        # 不能写 if vstyle 这种真值判断。
+        if vfmt == VideoFormat.SHORT:
+            # 短视频画面风格固定，带风格或描述都会被拒
+            vstyle, sprompt = None, None
+        elif vfmt == VideoFormat.CINEMATIC:
+            # 电影感不支持描述；自定义风格离了描述又不成立，一并退回自动
+            sprompt = None
+            if vstyle == VideoStyle.CUSTOM:
+                vstyle = None
+        elif vstyle == VideoStyle.CUSTOM:
+            if not sprompt:
+                raise HTTPException(400, "选了「自定义」风格就必须填画面描述")
+        elif sprompt:
+            # 描述只对自定义风格生效，其余情况丢掉而不是报错
+            sprompt = None
+
         st = await a.generate_video(
             nb, source_ids=sids, language=lang, instructions=ins,
-            video_format=_enum(VideoFormat, body.video_format),
-            video_style=_enum(VideoStyle, body.video_style),
-            style_prompt=body.style_prompt or None,
+            video_format=vfmt, video_style=vstyle, style_prompt=sprompt,
         )
     elif k == "cinematic":
         st = await a.generate_cinematic_video(

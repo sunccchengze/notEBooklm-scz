@@ -772,7 +772,8 @@ const GEN_OPTS = {
     { key: "video_style", label: "画面风格", def: "auto_select", opts: [
       ["auto_select", "自动"], ["classic", "经典"], ["whiteboard", "白板"],
       ["anime", "动漫"], ["kawaii", "可爱"], ["watercolor", "水彩"],
-      ["retro_print", "复古印刷"], ["heritage", "古典"], ["paper_craft", "剪纸"]] },
+      ["retro_print", "复古印刷"], ["heritage", "古典"], ["paper_craft", "剪纸"],
+      ["custom", "自定义"]] },
   ],
   quiz: [
     { key: "quantity", label: "题量", def: "standard", opts: [
@@ -828,8 +829,13 @@ async function gen(kind) {
   });
 
   if (kind === "video") {
-    html += `<p class="sec-label" style="margin-top:16px">画面补充描述（选填）</p>
-      <input id="genStyle" placeholder="例如：偏冷色调，多用示意图">`;
+    // 画面描述只有「自定义」风格才生效，Google 侧对其余组合会直接报错
+    html += `<div id="styleWrap" style="display:none">
+        <p class="sec-label" style="margin-top:16px">画面描述</p>
+        <input id="genStyle" placeholder="例如：偏冷色调，多用示意图">
+        <p class="hint">选「自定义」风格时必须填写，其余风格不支持。</p>
+      </div>
+      <p class="hint" id="videoTip" style="margin-top:12px"></p>`;
   }
 
   // 限定资料范围
@@ -848,6 +854,7 @@ async function gen(kind) {
   $("genTitle").textContent = `生成${NAMES[kind]}`;
   $("genBody").innerHTML = html;
   $("genMask").classList.add("show");
+  if (kind === "video") syncVideoRules();
 }
 
 function pickGen(btn) {
@@ -855,6 +862,50 @@ function pickGen(btn) {
   [...wrap.children].forEach((b) => b.classList.remove("on"));
   btn.classList.add("on");
   GEN_SEL[wrap.dataset.key] = btn.dataset.v;
+  if (GEN_KIND === "video") syncVideoRules();
+}
+
+/* 视频的组合约束（SDK 侧会直接拒绝，这里提前挡住）：
+     短视频   —— 画面风格固定，不能选风格、不能填描述
+     电影感   —— 不支持画面描述
+     自定义   —— 必须填画面描述
+     其余风格 —— 填了描述也不生效 */
+function syncVideoRules() {
+  const fmt = GEN_SEL.video_format;
+  const styleSeg = document.querySelector('.seg[data-key="video_style"]');
+  const wrap = $("styleWrap");
+  const tip = $("videoTip");
+  if (!styleSeg || !wrap) return;
+
+  const fixedStyle = fmt === "short";
+
+  // 短视频：整组风格禁用并强制回到自动
+  styleSeg.classList.toggle("locked", fixedStyle);
+  [...styleSeg.children].forEach((b) => (b.disabled = fixedStyle));
+  if (fixedStyle && GEN_SEL.video_style !== "auto_select") {
+    GEN_SEL.video_style = "auto_select";
+    [...styleSeg.children].forEach((b) =>
+      b.classList.toggle("on", b.dataset.v === "auto_select"));
+  }
+
+  // 电影感不支持画面描述，自定义风格离了描述不成立，一并退回自动
+  if (fmt === "cinematic" && GEN_SEL.video_style === "custom") {
+    GEN_SEL.video_style = "auto_select";
+    [...styleSeg.children].forEach((b) =>
+      b.classList.toggle("on", b.dataset.v === "auto_select"));
+  }
+  const customBtn = styleSeg.querySelector('[data-v="custom"]');
+  if (customBtn) customBtn.style.display = fmt === "cinematic" ? "none" : "";
+
+  const needPrompt = !fixedStyle && GEN_SEL.video_style === "custom";
+  wrap.style.display = needPrompt ? "" : "none";
+  if (!needPrompt && $("genStyle")) $("genStyle").value = "";
+
+  tip.textContent = fixedStyle
+    ? "短视频的画面风格由 Google 固定，不能自选。"
+    : fmt === "cinematic"
+      ? "电影感视频不支持画面描述。"
+      : "";
 }
 
 function closeGen() { $("genMask").classList.remove("show"); }
@@ -883,8 +934,27 @@ async function runGen() {
     source_ids: picked.length ? picked : null,
     ...GEN_SEL,
   };
-  const sp = $("genStyle")?.value?.trim();
-  if (sp) body.style_prompt = sp;
+  if (kind === "video") {
+    const sp = $("genStyle")?.value?.trim() || "";
+    if (body.video_format === "short") {
+      // 短视频风格固定，带上这两个参数 Google 会直接拒绝
+      body.video_style = null;
+      body.style_prompt = null;
+    } else if (body.video_style === "custom") {
+      if (!sp) {
+        toast("选了「自定义」风格就必须填画面描述", true);
+        gen("video");   // 把面板重新打开，别让用户白填
+        return;
+      }
+      body.style_prompt = sp;
+    } else {
+      // 描述只对自定义风格生效，其余情况一律不传
+      body.style_prompt = null;
+      if (body.video_format === "cinematic" && body.video_style === "custom") {
+        body.video_style = null;
+      }
+    }
+  }
 
   const row = document.createElement("div");
   row.className = "task";

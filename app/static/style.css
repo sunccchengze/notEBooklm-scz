@@ -723,3 +723,7 @@ h1, h2, h3 {
 
 /* 产物行：下载按钮常驻，其余操作 hover 才出 */
 #artList .item { align-items: center; }
+
+/* 被规则锁定的选项组 */
+.seg.locked { opacity: .45; pointer-events: none; }
+.seg button:disabled { cursor: not-allowed; }
