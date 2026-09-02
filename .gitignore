@@ -11,6 +11,15 @@ cookies.json
 .venv/
 out/*
 !out/.gitkeep
+# 小体积文本产物是 worker 回传给 Agent 的唯一 Git 通道，必须放行。
+# 二进制（m4a/mp3/mp4/pptx/pdf/png）体积大、Git 不适合，走 GitHub Release。
+!out/*.md
+!out/*.json
+!out/*.csv
+!out/*.txt
+!out/*.html
+# 已改走 Release 的文件挪到这里，避免被 git add out 捡到
+out/.shipped/
 
 # 工单执行结果（结果由 worker 回写，但本地跑出来的中间态不入库）
 jobs/.local/

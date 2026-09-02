@@ -275,6 +275,9 @@ class Step:
     # 具体判定逻辑由 execute() 里同名的 handler 负责。目前只有 resolve_notebook。
     handler: str | None = None
     argv2: list[str] = field(default_factory=list)
+    # 下载步骤专用：产物预期落盘路径。ship 子命令靠它做分流，
+    # 不能只依赖 CLI 返回的 artifact_file（下载失败/非 JSON 输出时会取不到）。
+    artifact_path: str | None = None
 
 
 def _nb(*args: str) -> list[str]:
@@ -425,6 +428,7 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
     steps.append(Step(
         label=f"下载 {job['kind']} → {outfile}",
         argv=_nb(*dlcmd), capture="artifact_file", needs=["notebook_id", "task_id"],
+        artifact_path=outfile,
     ))
 
     return steps
@@ -604,17 +608,168 @@ def execute(job: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
     result["status"] = "ok"
     result["captured"] = cap
     result["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    # 预期落盘路径：CLI 的 artifact_file 不一定取得到，ship 需要一条稳定的依据
+    for s in steps:
+        if s.artifact_path:
+            result["artifact"] = s.artifact_path
+            break
     return result
+
+
+# ──────────────────────────────────────────────────────── 大产物回传
+
+# 只有这些扩展名 + 体积在阈值内才走 Git。二进制（音频/视频/pptx/pdf/图片）
+# 动辄几十 MB，塞进 Git 会把仓库撑爆，一律走 GitHub Release。
+_GIT_OK_EXT = {".md", ".json", ".csv", ".txt", ".html"}
+_GIT_MAX_BYTES = 2 * 1024 * 1024        # 2 MB
+_SHIPPED_DIR = "out/.shipped"
+
+
+def _repo_slug() -> str | None:
+    """从 origin 推出 owner/repo。失败返回 None，让调用方去要 --repo。"""
+    p = subprocess.run(["git", "remote", "get-url", "origin"],
+                       capture_output=True, text=True, cwd=str(ROOT))
+    if p.returncode != 0:
+        return None
+    url = p.stdout.strip()
+    m = re.search(r"github\.com[/:]([^/]+/[^/]+?)(?:\.git)?$", url)
+    return m.group(1) if m else None
+
+
+def ship(result_path: str, *, dry_run: bool = False, tag: str | None = None,
+         repo: str | None = None) -> dict[str, Any]:
+    """把一份 result 里的产物分流回传：小文本走 Git，二进制走 GitHub Release。
+
+    改写 result JSON，加一个 `delivery` 段说明产物去哪了。Agent 读 result 就知道
+    是该 `git pull` 拿文件，还是去 Release 下载链接。
+
+    ⚠️ 这条路径**只在有 GitHub 出网的机器上成立**（即 Route B 的 worker）。
+    Arena 沙箱里 `uploads.github.com` 被 SNI 封锁（TLS 在 Client Hello 后
+    SSL_ERROR_SYSCALL），所以上传分支在沙箱内跑不通 —— 用 `--dry-run` 验判定逻辑。
+    """
+    rp = Path(result_path)
+    result = json.loads(rp.read_text(encoding="utf-8"))
+
+    # 产物路径：优先 CLI 返回的 artifact_file，退到 execute 记下的预期路径
+    art = (result.get("captured") or {}).get("artifact_file") or result.get("artifact")
+    delivery: dict[str, Any] = {"artifact": art}
+
+    if not art or not Path(art).is_file():
+        delivery.update(channel="none",
+                        reason="没有产物文件（工单可能失败了，或 kind 不产出文件）")
+        result["delivery"] = delivery
+        if not dry_run:
+            rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return delivery
+
+    p = Path(art)
+    size = p.stat().st_size
+    ext = p.suffix.lower()
+    delivery["bytes"] = size
+
+    if ext in _GIT_OK_EXT and size <= _GIT_MAX_BYTES:
+        delivery.update(channel="git", path=str(p),
+                        note="已留在工作树，随下一次 commit 回传（.gitignore 已放行该扩展名）")
+        result["delivery"] = delivery
+        if not dry_run:
+            rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return delivery
+
+    # 走 Release
+    slug = repo or _repo_slug()
+    if not slug:
+        delivery.update(channel="failed",
+                        error="推不出 owner/repo，且没给 --repo；产物仍留在原地")
+        result["delivery"] = delivery
+        if not dry_run:
+            rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return delivery
+
+    rtag = tag or f"artifact-{result.get('id', 'unknown')}"
+    asset = f"{result.get('id', 'unknown')}-{p.name}"
+    delivery.update(channel="release", repo=slug, tag=rtag, asset=asset,
+                    reason=f"{ext} 或体积 {size} 字节不适合进 Git")
+
+    if dry_run:
+        delivery["dry_run"] = True
+        delivery["commands"] = [
+            f"gh release view {rtag} -R {slug}  # 不存在则 create",
+            f"gh release create {rtag} -R {slug} --title '{rtag}' --notes 'NotebookLM 工单产物'",
+            f"gh release upload {rtag} {p} -R {slug} --clobber",
+        ]
+        result["delivery"] = delivery
+        return delivery
+
+    # 1) 确保 release 存在
+    created_here = False          # 本次新建的 release，上传失败要回滚掉
+    view = subprocess.run(["gh", "release", "view", rtag, "-R", slug],
+                          capture_output=True, text=True)
+    if view.returncode != 0:
+        created = subprocess.run(
+            ["gh", "release", "create", rtag, "-R", slug,
+             "--title", rtag, "--notes", "NotebookLM 工单产物（由 scripts/worker.sh 上传）"],
+            capture_output=True, text=True)
+        if created.returncode != 0:
+            delivery.update(channel="failed",
+                            error=f"创建 release 失败: {(created.stderr or '').strip()[-400:]}")
+            result["delivery"] = delivery
+            rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            return delivery
+        created_here = True
+
+    # 2) 上传
+    up = subprocess.run(["gh", "release", "upload", rtag, str(p), "-R", slug, "--clobber"],
+                        capture_output=True, text=True)
+    if up.returncode != 0:
+        err = (up.stderr or "").strip()[-400:]
+        delivery.update(channel="failed", error=f"上传失败: {err}")
+        # 回滚：本次新建却没传上去东西的 release 是空壳，留在仓库上是垃圾
+        if created_here:
+            rb = subprocess.run(["gh", "release", "delete", rtag, "-R", slug,
+                                 "--yes", "--cleanup-tag"],
+                                capture_output=True, text=True)
+            delivery["rolled_back"] = rb.returncode == 0
+            if rb.returncode != 0:
+                delivery["rollback_error"] = (rb.stderr or "").strip()[-200:]
+        result["delivery"] = delivery
+        rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return delivery
+
+    # 3) 挪出 out/，避免下次 git add out 又想捡它（其实 .gitignore 已挡，双保险）
+    shipped = ROOT / _SHIPPED_DIR
+    shipped.mkdir(parents=True, exist_ok=True)
+    try:
+        p.rename(shipped / p.name)
+    except OSError:
+        pass  # 跨设备等情况，留在原地也不影响回传
+
+    delivery["url"] = f"https://github.com/{slug}/releases/download/{rtag}/{asset}"
+    result["delivery"] = delivery
+    rp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return delivery
 
 
 # ──────────────────────────────────────────────────────────── CLI
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="NotebookLM 工单执行器")
-    ap.add_argument("cmd", choices=["validate", "plan", "execute"])
-    ap.add_argument("job", help="工单 JSON 路径")
+    ap.add_argument("cmd", choices=["validate", "plan", "execute", "ship"])
+    ap.add_argument("job", help="工单 JSON 路径（ship 时传 result JSON 路径）")
     ap.add_argument("--result", help="把结果 JSON 写到这里（默认 jobs/.local/<id>.result.json）")
+    ap.add_argument("--dry-run", action="store_true", help="ship：只判定分流，不真的上传")
+    ap.add_argument("--tag", help="ship：GitHub Release 的 tag（默认 artifact-<工单 id>）")
+    ap.add_argument("--repo", help="ship：owner/repo（默认从 origin 推）")
     args = ap.parse_args()
+
+    # ship 不碰工单校验 —— 它作用于 execute 之后的 result
+    if args.cmd == "ship":
+        try:
+            d = ship(args.job, dry_run=args.dry_run, tag=args.tag, repo=args.repo)
+        except Exception as e:
+            print(f"[X] 回传失败: {e}", file=sys.stderr)
+            return 1
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0 if d.get("channel") != "failed" else 1
 
     try:
         job = json.loads(Path(args.job).read_text(encoding="utf-8"))

@@ -171,15 +171,35 @@
    `nbjob.py` 已经按这个分流，校验层也会拦住缺 prompt 的 custom 工单。
 2. **`type: "file"` 的路径必须真实存在**。校验时就检查，避免上传阶段才报错。
 
-## 三个子命令
+## 四个子命令
 
 ```bash
 python3 tools/nbjob.py validate jobs/samples/report-demo.job.json   # 只校验
 python3 tools/nbjob.py plan     jobs/samples/report-demo.job.json   # 打印将执行的命令，**不碰网络**
 python3 tools/nbjob.py execute  jobs/pending/xxx.job.json           # 真跑（需凭据 + 出网）
+python3 tools/nbjob.py ship     jobs/done/xxx.result.json           # 产物分流回传
+python3 tools/nbjob.py ship     jobs/done/xxx.result.json --dry-run # 只判定，不上传
 ```
 
-`plan` 是离线可跑的 —— 在 Google 不可达的沙箱里，它是 Agent 唯一能做的自证。
+`plan` 和 `ship --dry-run` 是离线可跑的 —— 在 Google 不可达的沙箱里，
+它们是 Agent 唯一能做的自证。
+
+### `ship` 干什么
+
+`execute` 只负责把产物下载到 `out/`。`ship` 决定它怎么回到 Agent 手里：
+
+| 产物 | 通道 | 依据 |
+|---|---|---|
+| `.md` / `.json` / `.csv` / `.txt` / `.html` 且 ≤ 2 MB | **Git** | 留在 `out/`，`.gitignore` 已放行这些扩展名 |
+| 其它（`.m4a` `.mp4` `.pptx` `.pdf` `.png` …）或 > 2 MB | **GitHub Release** | `gh release upload`，文件挪到 `out/.shipped/` |
+
+判定结果写进 result 的 `delivery` 段，Agent 读它就知道该 `git pull` 拿文件、
+还是去 `delivery.url` 下载。上传失败时 `channel` 是 `"failed"`、退出码 1，
+并且**回滚**本次新建却没传上东西的空 release。
+
+> ⚠️ 上传那一段**只在有 GitHub 出网的机器上成立**（Route B 的 worker）。
+> Arena 沙箱里 `uploads.github.com` 被 SNI 封锁，只能跑 `--dry-run`。
+> 详见 [../docs/arena-agent.md](../docs/arena-agent.md) 第 6 节的出网边界表。
 
 ## 结果文件
 

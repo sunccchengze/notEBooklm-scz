@@ -49,6 +49,9 @@ run_round() {
     mkdir -p jobs/done out
     # execute 内部已经处理失败：status=failed 也会写结果文件，Agent 能读到原因
     .venv/bin/python tools/nbjob.py execute "$j" --result "jobs/done/$id.result.json" || true
+    # 产物分流：小文本留在 out/ 随 Git 回传，二进制走 GitHub Release。
+    # 失败不阻塞——delivery 段已写进 result，Agent 能读到原因并重试。
+    .venv/bin/python tools/nbjob.py ship "jobs/done/$id.result.json" >/dev/null 2>&1 || true
     # 无论成败都把工单挪出 pending，避免重复执行浪费配额
     git mv -f "$j" "jobs/running/$id.job.json" 2>/dev/null || mv -f "$j" "jobs/running/$id.job.json"
     changed=1

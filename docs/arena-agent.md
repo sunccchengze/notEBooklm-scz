@@ -155,11 +155,31 @@ MCP 侧默认注册 33 个工具（实测 fastmcp 3.4.2）：`chat_ask` / `sourc
 
 - **真实 API 端到端**：九种工单都在 mock CLI 上验证过编排逻辑，但**没有**在真实
   NotebookLM 上跑通过 —— 沙箱打不通 Google。这是当前最大的未验证项。
-- **大产物回传**（GitHub Release / Artifact 通道）—— mp3 / mp4 / pptx / mp4 不适合走 Git，
-  目前只回传小文件（md / json / csv / png）。
+- **大产物回传的上传分支未实测**：`ship` 子命令已实现分流（小文本走 Git、
+  二进制走 GitHub Release），但**上传那一段在沙箱内跑不通**，原因见下条。
+  分流判定、失败处理、回滚都验证过了；真机上的成功路径**没验证过**。
 - **笔记本按标题「模糊」匹配**：现在只做**精确**同名匹配（`list --json` 后逐条比对
   去首尾空格的 title），命中即复用。近似匹配、跨账号去重还没做。
 - **`cinematic-video` 别名、`revise-slide` 单页改写、`artifact retry`** 还没做成工单动作。
+
+### 一条实测出来的出网边界（影响上面的判断）
+
+沙箱的放行名单是**按域名**的，GitHub 只放行了 API 和主站：
+
+| 域名 | 实测 | 说明 |
+|---|---|---|
+| `api.github.com` | `200` | 建/删 release、改 issue 都行 |
+| `github.com` | `200` | clone / push 正常 |
+| `uploads.github.com` | `000` | **Release 传附件走这里**，TLS 在 Client Hello 后 `SSL_ERROR_SYSCALL` |
+| `objects.githubusercontent.com` | `000` | 下载 release 附件走这里，同样不通 |
+
+也就是说：**沙箱内能建 release、能 push，但传不上附件、也下不下来**。
+所以大产物回传只能在 Route B 的 worker（用户自己的机器）上做，
+那里没有这层 MITM 代理 —— 但这一条我**无法在沙箱内证实**，只是推断。
+
+`ship` 因此设计成：失败不谎报成功（`channel: "failed"` + `exit 1`），
+且**回滚**本次新建却没传上东西的空 release —— 否则每次失败都在用户仓库留垃圾。
+这条回滚路径已实测：沙箱内上传必然失败，跑完 release 数仍是 `0`、无残留 tag。
 
 ---
 
