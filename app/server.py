@@ -29,6 +29,20 @@ from notebooklm import (  # noqa: E402
     NotebookLMClient,
     ReportFormat,
 )
+from notebooklm.rpc.types import (  # noqa: E402
+    AudioFormat,
+    AudioLength,
+    ExportType,
+    InfographicDetail,
+    InfographicOrientation,
+    InfographicStyle,
+    QuizDifficulty,
+    QuizQuantity,
+    SlideDeckFormat,
+    SlideDeckLength,
+    VideoFormat,
+    VideoStyle,
+)
 
 STATIC = Path(__file__).parent / "static"
 OUT = ROOT / "out"
@@ -101,6 +115,26 @@ class GenerateBody(BaseModel):
     kind: str
     instructions: str | None = None
     language: str = "zh"
+    source_ids: list[str] | None = None      # 限定只用这几份资料
+    # 播客
+    audio_format: str | None = None          # deep_dive|brief|critique|debate
+    audio_length: str | None = None          # short|default|long
+    # 视频
+    video_format: str | None = None          # explainer|brief|cinematic|short
+    video_style: str | None = None           # classic|whiteboard|anime|...
+    style_prompt: str | None = None
+    # 测验 / 闪卡
+    quantity: str | None = None              # fewer|standard|more
+    difficulty: str | None = None            # easy|medium|hard
+    # 幻灯片
+    slide_format: str | None = None          # detailed_deck|presenter_slides
+    slide_length: str | None = None          # default|short
+    # 信息图
+    orientation: str | None = None           # landscape|portrait|square
+    detail_level: str | None = None          # concise|standard|detailed
+    infographic_style: str | None = None     # professional|sketch_note|...
+    # 报告
+    custom_prompt: str | None = None
 
 
 class RenameBody(BaseModel):
@@ -582,34 +616,78 @@ _REPORTS = {
 }
 
 
+def _enum(cls: Any, key: str | None) -> Any:
+    """把前端传来的小写字符串转成 SDK 枚举；空值或不认识的返回 None。"""
+    if not key:
+        return None
+    try:
+        return cls[key.upper()]
+    except KeyError:
+        return None
+
+
 @app.post("/api/generate")
 async def api_generate(body: GenerateBody) -> dict[str, Any]:
     client = await get_client()
     a = client.artifacts
     k, ins, lang = body.kind, body.instructions or None, body.language
     nb = body.notebook_id
+    sids = body.source_ids or None
 
     if k == "audio":
-        st = await a.generate_audio(nb, language=lang, instructions=ins)
+        st = await a.generate_audio(
+            nb, source_ids=sids, language=lang, instructions=ins,
+            audio_format=_enum(AudioFormat, body.audio_format),
+            audio_length=_enum(AudioLength, body.audio_length),
+        )
     elif k == "video":
-        st = await a.generate_video(nb, language=lang, instructions=ins)
+        st = await a.generate_video(
+            nb, source_ids=sids, language=lang, instructions=ins,
+            video_format=_enum(VideoFormat, body.video_format),
+            video_style=_enum(VideoStyle, body.video_style),
+            style_prompt=body.style_prompt or None,
+        )
     elif k == "cinematic":
-        st = await a.generate_cinematic_video(nb, language=lang, instructions=ins)
+        st = await a.generate_cinematic_video(
+            nb, source_ids=sids, language=lang, instructions=ins
+        )
     elif k == "quiz":
-        st = await a.generate_quiz(nb, language=lang, instructions=ins)
+        st = await a.generate_quiz(
+            nb, source_ids=sids, instructions=ins,
+            quantity=_enum(QuizQuantity, body.quantity),
+            difficulty=_enum(QuizDifficulty, body.difficulty),
+        )
     elif k == "flashcards":
-        st = await a.generate_flashcards(nb, language=lang, instructions=ins)
+        st = await a.generate_flashcards(
+            nb, source_ids=sids, instructions=ins,
+            quantity=_enum(QuizQuantity, body.quantity),
+            difficulty=_enum(QuizDifficulty, body.difficulty),
+        )
     elif k == "slides":
-        st = await a.generate_slide_deck(nb, language=lang, instructions=ins)
+        st = await a.generate_slide_deck(
+            nb, source_ids=sids, language=lang, instructions=ins,
+            slide_format=_enum(SlideDeckFormat, body.slide_format),
+            slide_length=_enum(SlideDeckLength, body.slide_length),
+        )
     elif k == "infographic":
-        st = await a.generate_infographic(nb, language=lang, instructions=ins)
+        st = await a.generate_infographic(
+            nb, source_ids=sids, language=lang, instructions=ins,
+            orientation=_enum(InfographicOrientation, body.orientation),
+            detail_level=_enum(InfographicDetail, body.detail_level),
+            style=_enum(InfographicStyle, body.infographic_style),
+        )
     elif k == "datatable":
-        st = await a.generate_data_table(nb, language=lang, instructions=ins)
+        st = await a.generate_data_table(
+            nb, source_ids=sids, language=lang, instructions=ins
+        )
     elif k == "mindmap":
-        st = await a.generate_mind_map(nb)
+        st = await a.generate_mind_map(
+            nb, source_ids=sids, language=lang, instructions=ins
+        )
     elif k in _REPORTS:
         st = await a.generate_report(
-            nb, report_format=_REPORTS[k], language=lang, extra_instructions=ins
+            nb, report_format=_REPORTS[k], source_ids=sids, language=lang,
+            custom_prompt=body.custom_prompt or None, extra_instructions=ins,
         )
     else:
         raise HTTPException(400, f"未知类型: {k}")
@@ -626,6 +704,23 @@ async def api_generate(body: GenerateBody) -> dict[str, Any]:
 
     asyncio.create_task(_run())
     return {"task_id": tid, "kind": k}
+
+
+@app.get("/api/report-suggest/{notebook_id}")
+async def api_report_suggest(notebook_id: str) -> list[dict[str, Any]]:
+    """AI 推荐做哪些报告，对应网页版 Reports 里的建议。"""
+    client = await get_client()
+    try:
+        items = await client.artifacts.suggest_reports(notebook_id)
+    except Exception:
+        return []
+    out = []
+    for x in items[:6]:
+        out.append({
+            "title": getattr(x, "title", "") or "",
+            "prompt": getattr(x, "prompt", "") or getattr(x, "description", "") or "",
+        })
+    return [x for x in out if x["title"]]
 
 
 @app.get("/api/task/{task_id}")
@@ -672,6 +767,7 @@ async def api_download(notebook_id: str, kind: str):
 
 @app.get("/api/artifacts/{notebook_id}")
 async def api_artifacts(notebook_id: str) -> list[dict[str, Any]]:
+    """已生成的所有产物，对应网页版 Studio 里的列表。"""
     client = await get_client()
     try:
         items = await client.artifacts.list(notebook_id)
@@ -679,15 +775,123 @@ async def api_artifacts(notebook_id: str) -> list[dict[str, Any]]:
         return []
     out = []
     for x in items:
-        t = getattr(x, "type", None)
+        t = getattr(x, "kind", None) or getattr(x, "type", None)
+        urls = getattr(x, "media_urls", None) or []
         out.append(
             {
-                "id": getattr(x, "id", ""),
-                "type": getattr(t, "value", str(t)),
+                "id": getattr(x, "id", "") or getattr(x, "artifact_id", ""),
+                "type": getattr(t, "value", str(t or "")),
                 "title": getattr(x, "title", "") or "",
+                "status": getattr(x, "status_str", "") or "",
+                "done": bool(getattr(x, "is_completed", False)),
+                "failed": bool(getattr(x, "is_failed", False)),
+                "running": bool(getattr(x, "is_processing", False) or getattr(x, "is_pending", False)),
+                "created": str(getattr(x, "created_at", "") or "")[:16],
+                "duration": getattr(x, "duration_seconds", None),
+                "url": (urls[0] if urls else getattr(x, "url", "") or ""),
             }
         )
     return out
+
+
+@app.post("/api/artifacts/rename")
+async def api_artifact_rename(body: RenameBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.artifacts.rename(body.notebook_id, body.target_id, body.name)
+    return {"ok": True}
+
+
+@app.delete("/api/artifacts/{notebook_id}/{artifact_id}")
+async def api_artifact_del(notebook_id: str, artifact_id: str) -> dict[str, Any]:
+    client = await get_client()
+    await client.artifacts.delete(notebook_id, artifact_id)
+    return {"ok": True}
+
+
+@app.post("/api/artifacts/retry/{notebook_id}/{artifact_id}")
+async def api_artifact_retry(notebook_id: str, artifact_id: str) -> dict[str, Any]:
+    """重试失败的生成任务。"""
+    client = await get_client()
+    st = await client.artifacts.retry_failed(notebook_id, artifact_id)
+    return {"task_id": getattr(st, "task_id", "")}
+
+
+@app.get("/api/artifact-prompt/{notebook_id}/{artifact_id}")
+async def api_artifact_prompt(notebook_id: str, artifact_id: str) -> dict[str, Any]:
+    """查看这个产物当初是用什么提示词生成的。"""
+    client = await get_client()
+    try:
+        return {"prompt": await client.artifacts.get_prompt(notebook_id, artifact_id) or ""}
+    except Exception as e:
+        return {"prompt": "", "error": str(e)}
+
+
+@app.post("/api/artifacts/export")
+async def api_artifact_export(body: dict[str, Any]) -> dict[str, Any]:
+    """导出到 Google 文档 / 表格。"""
+    client = await get_client()
+    et = ExportType.SHEETS if body.get("target") == "sheets" else ExportType.DOCS
+    try:
+        r = await client.artifacts.export(
+            body["notebook_id"],
+            body.get("artifact_id"),
+            title=body.get("title", "导出"),
+            export_type=et,
+        )
+        return {"ok": True, "result": str(r)[:400]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/slides/revise")
+async def api_slide_revise(body: dict[str, Any]) -> dict[str, Any]:
+    """修改幻灯片里的某一页。"""
+    client = await get_client()
+    st = await client.artifacts.revise_slide(
+        body["notebook_id"], body["artifact_id"],
+        int(body["slide_index"]), body["prompt"],
+    )
+    return {"task_id": getattr(st, "task_id", "")}
+
+
+# ---------------------------------------------------------------- 分享给指定用户
+
+@app.get("/api/share-users/{notebook_id}")
+async def api_share_users(notebook_id: str) -> dict[str, Any]:
+    client = await get_client()
+    try:
+        st = await client.sharing.get_status(notebook_id)
+        users = getattr(st, "users", None) or getattr(st, "grants", None) or []
+        return {
+            "public": bool(getattr(st, "is_public", False)),
+            "users": [
+                {
+                    "email": getattr(u, "email", "") or str(u),
+                    "role": str(getattr(getattr(u, "permission", ""), "name", "") or ""),
+                }
+                for u in users
+            ],
+        }
+    except Exception as e:
+        return {"public": False, "users": [], "error": str(e)}
+
+
+@app.post("/api/share-users")
+async def api_share_add(body: dict[str, Any]) -> dict[str, Any]:
+    """按邮箱共享。role: viewer | editor"""
+    from notebooklm.rpc.types import SharePermission
+
+    client = await get_client()
+    perm = SharePermission.EDITOR if body.get("role") == "editor" else SharePermission.VIEWER
+    await client.sharing.add_user(body["notebook_id"], body["email"], perm)
+    return {"ok": True}
+
+
+@app.delete("/api/share-users/{notebook_id}/{email}")
+async def api_share_remove(notebook_id: str, email: str) -> dict[str, Any]:
+    client = await get_client()
+    await client.sharing.remove_user(notebook_id, email)
+    return {"ok": True}
 
 
 @app.get("/api/open-folder")

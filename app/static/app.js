@@ -682,9 +682,134 @@ const NAMES = {
   mindmap: "思维导图", slides: "幻灯片", infographic: "信息图", datatable: "数据表",
 };
 
+/* 每种产物可配置的选项。对应网页版点「生成」后弹出的面板。 */
+const GEN_OPTS = {
+  audio: [
+    { key: "audio_format", label: "节目形式", def: "deep_dive", opts: [
+      ["deep_dive", "深度对谈"], ["brief", "简报速览"],
+      ["critique", "评论分析"], ["debate", "辩论"]] },
+    { key: "audio_length", label: "时长", def: "default", opts: [
+      ["short", "简短"], ["default", "标准"], ["long", "较长"]] },
+  ],
+  video: [
+    { key: "video_format", label: "视频形式", def: "explainer", opts: [
+      ["explainer", "讲解型"], ["brief", "简报"],
+      ["cinematic", "电影感"], ["short", "短视频"]] },
+    { key: "video_style", label: "画面风格", def: "auto_select", opts: [
+      ["auto_select", "自动"], ["classic", "经典"], ["whiteboard", "白板"],
+      ["anime", "动漫"], ["kawaii", "可爱"], ["watercolor", "水彩"],
+      ["retro_print", "复古印刷"], ["heritage", "古典"], ["paper_craft", "剪纸"]] },
+  ],
+  quiz: [
+    { key: "quantity", label: "题量", def: "standard", opts: [
+      ["fewer", "较少"], ["standard", "标准"], ["more", "较多"]] },
+    { key: "difficulty", label: "难度", def: "medium", opts: [
+      ["easy", "简单"], ["medium", "中等"], ["hard", "困难"]] },
+  ],
+  flashcards: [
+    { key: "quantity", label: "卡片数量", def: "standard", opts: [
+      ["fewer", "较少"], ["standard", "标准"], ["more", "较多"]] },
+    { key: "difficulty", label: "难度", def: "medium", opts: [
+      ["easy", "简单"], ["medium", "中等"], ["hard", "困难"]] },
+  ],
+  slides: [
+    { key: "slide_format", label: "版式", def: "detailed_deck", opts: [
+      ["detailed_deck", "详细讲义"], ["presenter_slides", "演讲用"]] },
+    { key: "slide_length", label: "篇幅", def: "default", opts: [
+      ["default", "标准"], ["short", "精简"]] },
+  ],
+  infographic: [
+    { key: "orientation", label: "画幅", def: "landscape", opts: [
+      ["landscape", "横向"], ["portrait", "纵向"], ["square", "方形"]] },
+    { key: "detail_level", label: "信息密度", def: "standard", opts: [
+      ["concise", "精简"], ["standard", "标准"], ["detailed", "详尽"]] },
+    { key: "infographic_style", label: "视觉风格", def: "auto_select", opts: [
+      ["auto_select", "自动"], ["professional", "商务"], ["sketch_note", "手绘笔记"],
+      ["bento_grid", "网格"], ["editorial", "杂志"], ["instructional", "教学"],
+      ["bricks", "积木"], ["clay", "黏土"], ["anime", "动漫"],
+      ["kawaii", "可爱"], ["scientific", "学术"]] },
+  ],
+};
+
+let GEN_KIND = null;
+let GEN_SEL = {};
+
+/** 点生成卡片 → 先弹配置面板 */
 async function gen(kind) {
   if (!CUR) return toast("请先选择笔记本", true);
-  const ins = $("genIns").value.trim();
+  GEN_KIND = kind;
+  GEN_SEL = {};
+
+  const fields = GEN_OPTS[kind] || [];
+  fields.forEach((f) => (GEN_SEL[f.key] = f.def));
+
+  let html = "";
+  fields.forEach((f) => {
+    html += `<p class="sec-label" style="margin-top:16px">${f.label}</p>
+      <div class="seg wrap" data-key="${f.key}">` +
+      f.opts.map(([v, t]) =>
+        `<button data-v="${v}" class="${v === f.def ? "on" : ""}"
+           onclick="pickGen(this)">${t}</button>`).join("") +
+      `</div>`;
+  });
+
+  if (kind === "video") {
+    html += `<p class="sec-label" style="margin-top:16px">画面补充描述（选填）</p>
+      <input id="genStyle" placeholder="例如：偏冷色调，多用示意图">`;
+  }
+
+  // 限定资料范围
+  const srcs = await getSourceList();
+  if (srcs.length) {
+    html += `<p class="sec-label" style="margin-top:16px">
+        使用哪些资料<span class="hint-inline">（不选＝全部）</span></p>
+      <div class="src-pick" id="genSrcs">` +
+      srcs.map((x) => `<label><input type="checkbox" value="${esc(x.id)}">
+        <span>${esc(x.title)}</span></label>`).join("") + `</div>`;
+  }
+
+  html += `<p class="sec-label" style="margin-top:16px">补充要求（选填）</p>
+    <textarea id="genIns2" placeholder="例如：重点讲第 3 章，用通俗的比喻"></textarea>`;
+
+  $("genTitle").textContent = `生成${NAMES[kind]}`;
+  $("genBody").innerHTML = html;
+  $("genMask").classList.add("show");
+}
+
+function pickGen(btn) {
+  const wrap = btn.closest(".seg");
+  [...wrap.children].forEach((b) => b.classList.remove("on"));
+  btn.classList.add("on");
+  GEN_SEL[wrap.dataset.key] = btn.dataset.v;
+}
+
+function closeGen() { $("genMask").classList.remove("show"); }
+
+let SRC_CACHE = [];
+async function getSourceList() {
+  try {
+    SRC_CACHE = await api(`/api/sources/${CUR.id}`);
+    return SRC_CACHE;
+  } catch { return []; }
+}
+
+/** 配置面板点「开始生成」 */
+async function runGen() {
+  const kind = GEN_KIND;
+  closeGen();
+
+  const picked = [...document.querySelectorAll("#genSrcs input:checked")].map((i) => i.value);
+  const body = {
+    notebook_id: CUR.id,
+    kind,
+    language: "zh",
+    instructions: ($("genIns2")?.value || "").trim() || null,
+    source_ids: picked.length ? picked : null,
+    ...GEN_SEL,
+  };
+  const sp = $("genStyle")?.value?.trim();
+  if (sp) body.style_prompt = sp;
+
   const row = document.createElement("div");
   row.className = "task";
   row.innerHTML = `<div class="spin"></div><div class="task-name">${NAMES[kind]} 生成中…</div>`;
@@ -694,7 +819,7 @@ async function gen(kind) {
     const r = await api("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notebook_id: CUR.id, kind, instructions: ins || null }),
+      body: JSON.stringify(body),
     });
     pollTask(r.task_id, kind, row, CUR.id);
   } catch (e) {
@@ -859,6 +984,143 @@ async function saveSettings() {
   } catch (e) { toast(e.message, true); }
 }
 
+// ---------------------------------------------------------------- 产物库
+
+const TYPE_CN = {
+  audio: "播客", video: "视频", report: "报告", quiz: "测验",
+  flashcards: "闪卡", mind_map: "思维导图", infographic: "信息图",
+  slide_deck: "幻灯片", data_table: "数据表", file: "文件", unknown: "其他",
+};
+
+async function loadArtifacts() {
+  if (!CUR) return;
+  const box = $("artList");
+  box.innerHTML = '<div class="empty">载入中…</div>';
+  try {
+    const items = await api(`/api/artifacts/${CUR.id}`);
+    if (!items.length) {
+      box.innerHTML = '<div class="empty">还没有生成过内容</div>';
+      return;
+    }
+    box.innerHTML = items.map((x) => {
+      const st = x.failed ? '<span class="badge err">失败</span>'
+        : x.running ? '<span class="badge run">生成中</span>' : "";
+      const dur = x.duration ? ` · ${Math.round(x.duration / 60)} 分钟` : "";
+      return `<div class="item">
+        <div class="item-body">
+          <div class="item-title">${esc(x.title || TYPE_CN[x.type] || x.type)} ${st}</div>
+          <div class="item-sub">${TYPE_CN[x.type] || x.type}${dur} · ${esc(x.created)}</div>
+        </div>
+        <span class="nb-ops">
+          ${x.done ? `<button class="x" onclick="artifactPrompt('${x.id}')" title="查看生成提示词">☰</button>` : ""}
+          ${x.done ? `<button class="x" onclick="exportArtifact('${x.id}','${esc(x.title)}')" title="导出到 Google 文档">↗</button>` : ""}
+          ${x.failed ? `<button class="x" onclick="retryArtifact('${x.id}')" title="重试">↻</button>` : ""}
+          <button class="x" onclick="renameArtifact('${x.id}')" title="重命名">✎</button>
+          <button class="x" onclick="delArtifact('${x.id}')" title="删除">✕</button>
+        </span></div>`;
+    }).join("");
+    scPages.studio?.sync();
+  } catch (e) {
+    box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function delArtifact(id) {
+  if (!confirm("删除这个生成内容？")) return;
+  try {
+    await api(`/api/artifacts/${CUR.id}/${id}`, { method: "DELETE" });
+    loadArtifacts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function renameArtifact(id) {
+  const t = await dialog("重命名", "", "新标题");
+  if (!t) return;
+  try {
+    await api("/api/artifacts/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: CUR.id, target_id: id, name: t }),
+    });
+    loadArtifacts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function retryArtifact(id) {
+  toast("正在重试…");
+  try {
+    await api(`/api/artifacts/retry/${CUR.id}/${id}`, { method: "POST" });
+    toast("已重新开始");
+    loadArtifacts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function artifactPrompt(id) {
+  try {
+    const r = await api(`/api/artifact-prompt/${CUR.id}/${id}`);
+    showInfo("生成时用的提示词",
+      `<div class="text">${r.prompt ? fmt(r.prompt) : "（没有记录）"}</div>`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function exportArtifact(id, title) {
+  toast("正在导出…");
+  try {
+    const r = await api("/api/artifacts/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: CUR.id, artifact_id: id, title: title || "导出" }),
+    });
+    toast(r.ok ? "已导出到 Google 文档" : (r.error || "导出失败"), !r.ok);
+  } catch (e) { toast(e.message, true); }
+}
+
+// ---------------------------------------------------------------- 分享
+
+async function openShare() {
+  if (!CUR) return toast("请先选择笔记本", true);
+  $("shareMask").classList.add("show");
+  $("shareUsers").innerHTML = '<div class="empty">载入中…</div>';
+  try {
+    const r = await api(`/api/share-users/${CUR.id}`);
+    $("sharePublic").checked = !!r.public;
+    $("shareUsers").innerHTML = r.users?.length
+      ? r.users.map((u) => `<div class="item">
+          <div class="item-body"><div class="item-title">${esc(u.email)}</div>
+          <div class="item-sub">${u.role === "EDITOR" ? "可编辑" : "可查看"}</div></div>
+          <button class="x" onclick="delShareUser('${esc(u.email)}')" title="移除">✕</button>
+        </div>`).join("")
+      : '<div class="empty" style="padding:12px">还没有共享给别人</div>';
+  } catch (e) {
+    $("shareUsers").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+function closeShare() { $("shareMask").classList.remove("show"); }
+
+async function addShareUser() {
+  const email = $("shareEmail").value.trim();
+  if (!email) return toast("请输入邮箱", true);
+  const role = $("shareRole").value;
+  try {
+    await api("/api/share-users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: CUR.id, email, role }),
+    });
+    $("shareEmail").value = "";
+    toast("已共享");
+    openShare();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function delShareUser(email) {
+  try {
+    await api(`/api/share-users/${CUR.id}/${encodeURIComponent(email)}`, { method: "DELETE" });
+    openShare();
+  } catch (e) { toast(e.message, true); }
+}
+
 // ---------------------------------------------------------------- 面板
 
 function togglePanel() {
@@ -866,6 +1128,7 @@ function togglePanel() {
 }
 
 function switchTab(name) {
+  if (name === "studio" && CUR) loadArtifacts();
   ["sources", "studio", "research", "notes"].forEach((t) => {
     $("tab-" + t).classList.toggle("active", t === name);
     $("page-" + t).classList.toggle("active", t === name);
@@ -887,6 +1150,9 @@ Object.assign(window, {
   srcRename, srcRefresh, srcGuide,
   addLabel, autoLabel, delLabel,
   viewNote, editNote, showInfo, closeInfo,
+  pickGen, closeGen, runGen,
+  loadArtifacts, delArtifact, renameArtifact, retryArtifact,
+  artifactPrompt, exportArtifact, openShare, closeShare, addShareUser, delShareUser,
 });
 
 boot();

@@ -621,3 +621,42 @@ h1, h2, h3 {
 /* 宽弹层 */
 .dialog.wide { max-width: 640px; }
 .info-body { max-height: 60vh; overflow-y: auto; min-height: 0; margin-bottom: var(--s-md); }
+
+/* 生成配置：可换行的选项组 */
+.seg.wrap { flex-wrap: wrap; height: auto; }
+.seg.wrap button { flex: 0 0 auto; }
+
+.hint-inline { color: var(--muted-soft); font-weight: 400; margin-left: 4px; }
+
+/* 资料多选 */
+.src-pick {
+  max-height: 170px; overflow-y: auto; min-height: 0;
+  border: 1px solid var(--hairline); border-radius: var(--r-md);
+  padding: var(--s-sm); background: var(--canvas);
+}
+.src-pick label {
+  display: flex; align-items: center; gap: var(--s-sm);
+  padding: 5px 6px; border-radius: var(--r-sm); cursor: pointer;
+  font-size: 14px; color: var(--body);
+}
+.src-pick label:hover { background: var(--surface-soft); }
+.src-pick span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 状态徽章 */
+.badge {
+  display: inline-block; margin-left: 6px; padding: 1px 7px;
+  border-radius: var(--r-pill); font-size: 11px; vertical-align: middle;
+}
+.badge.err { background: var(--error); color: #fff; }
+.badge.run { background: var(--surface-cream-strong); color: var(--muted); }
+
+/* 共享弹层 */
+.chk { display: flex; align-items: center; gap: var(--s-sm); font-size: 14px; color: var(--body); }
+#shareRole {
+  border: 1px solid var(--hairline); border-radius: var(--r-md);
+  padding: 0 10px; background: var(--canvas); color: var(--body);
+  font-family: inherit; font-size: 14px;
+}
+#shareUsers { max-height: 200px; overflow-y: auto; min-height: 0; }

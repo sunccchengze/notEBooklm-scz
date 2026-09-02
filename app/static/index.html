@@ -43,6 +43,7 @@
         <div class="sub" id="nbSub"></div>
       </div>
       <div class="top-actions">
+        <button class="btn-secondary" onclick="openShare()" title="共享给其他人">共享</button>
         <button class="btn-secondary" onclick="openSettings()" title="回答长度与风格">对话设置</button>
         <button class="btn-secondary" onclick="openFolder()" title="打开下载文件夹">下载目录</button>
         <button class="btn-secondary" onclick="togglePanel()" id="panelBtn">资料与生成</button>
@@ -132,6 +133,12 @@
         <button class="gen" onclick="gen('datatable')"><b>数据表</b><span>CSV</span></button>
       </div>
 
+      <div class="sec-head" style="margin-top:28px">
+        <p class="sec-label">已生成的内容</p>
+        <button class="mini" onclick="loadArtifacts()">刷新</button>
+      </div>
+      <div class="list" id="artList"><div class="empty">未选择笔记本</div></div>
+
       <div class="tasks" id="tasks"></div>
     </section>
 
@@ -212,6 +219,48 @@
     <div id="infoBody" class="info-body"></div>
     <div class="dialog-actions">
       <button class="ok" onclick="closeInfo()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 生成配置 -->
+<div class="mask" id="genMask" onclick="if(event.target===this)closeGen()">
+  <div class="dialog wide">
+    <h3 id="genTitle">生成</h3>
+    <div id="genBody" class="info-body"></div>
+    <div class="dialog-actions">
+      <button class="no" onclick="closeGen()">取消</button>
+      <button class="ok" onclick="runGen()">开始生成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 共享 -->
+<div class="mask" id="shareMask" onclick="if(event.target===this)closeShare()">
+  <div class="dialog">
+    <h3>共享笔记本</h3>
+    <p>把这个笔记本共享给其他 Google 账号。</p>
+
+    <label class="chk" style="margin:12px 0">
+      <input type="checkbox" id="sharePublic" disabled>
+      <span>已生成公开链接</span>
+    </label>
+
+    <p class="sec-label">添加成员</p>
+    <div class="add-row">
+      <input id="shareEmail" placeholder="对方的 Google 邮箱" style="flex:1">
+      <select id="shareRole">
+        <option value="viewer">可查看</option>
+        <option value="editor">可编辑</option>
+      </select>
+      <button onclick="addShareUser()">添加</button>
+    </div>
+
+    <p class="sec-label" style="margin-top:20px">已共享给</p>
+    <div class="list" id="shareUsers"></div>
+
+    <div class="dialog-actions">
+      <button class="ok" onclick="closeShare()">关闭</button>
     </div>
   </div>
 </div>
