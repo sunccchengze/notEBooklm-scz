@@ -6,7 +6,7 @@ let CONV = null;
 let BUSY = false;
 let RMODE = "fast";
 let RTASK = null;
-let CFG = { length: "default", goal: "default", custom_prompt: "" };
+let CFG = { length: "default", goal: "default", custom_prompt: "", language: "" };
 
 let scChat = null, scNb = null;
 const scPages = {};
@@ -1336,15 +1336,56 @@ async function editNote(id) {
   } catch (e) { toast(e.message, true); }
 }
 
+// ---------------------------------------------------------------- 报告选题建议
+
+/* AI 根据资料推荐值得做的报告。点一下就把主题填进「补充要求」。
+   这个能力后端早就有，一直没有界面入口。 */
+async function loadReportSuggest() {
+  if (!CUR) return toast("请先选择笔记本", true);
+  const box = $("reportSuggest");
+  const mine = CUR.id;
+  box.innerHTML = '<div class="empty" style="padding:10px">正在想…</div>';
+  try {
+    const list = await api(`/api/report-suggest/${encodeURIComponent(mine)}`);
+    if (CUR?.id !== mine) return;
+    if (!list.length) {
+      box.innerHTML = '<div class="empty" style="padding:10px">暂时没有建议</div>';
+      return;
+    }
+    box.innerHTML = list.map((x) =>
+      `<button class="tag as-btn" data-act="useReportIdea"
+         data-a0="${esc(x.prompt || x.title)}" title="${esc(x.prompt || "")}"
+        >${esc(x.title)}</button>`).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="empty" style="padding:10px">${esc(e.message)}</div>`;
+  }
+}
+
+function useReportIdea(prompt) {
+  $("genIns").value = prompt;
+  $("genIns").focus();
+  toast("已填入补充要求，选一种报告类型开始生成");
+}
+
 // ---------------------------------------------------------------- 对话设置
 
 async function openSettings() {
   if (!CUR) return toast("请先选择笔记本", true);
   // 拉取已有的自定义人设
+  // 三个字段都要回读：configure 省略哪个就会把哪个重置成默认，
+  // 只读 custom_prompt 会让用户设过的长度和风格被悄悄打回默认
   try {
     const c = await api(`/api/chat-config/${CUR.id}`);
     CFG.custom_prompt = c.custom_prompt || "";
+    if (c.length) CFG.length = c.length;
+    if (c.goal) CFG.goal = c.goal;
   } catch {}
+  try {
+    const st = await (await fetch("/api/settings")).json();
+    CFG.language = st.language || "";
+  } catch {}
+  [...$("segLang").children].forEach((b) =>
+    b.classList.toggle("on", b.dataset.v === CFG.language));
   $("cfgCustom").value = CFG.custom_prompt;
   markSeg("segLen", CFG.length);
   markSeg("segGoal", CFG.goal);
@@ -1361,6 +1402,12 @@ function markSeg(id, val) {
 function pickLen(btn) {
   CFG.length = btn.dataset.v;
   markSeg("segLen", CFG.length);
+}
+
+function pickLang(btn) {
+  CFG.language = btn.dataset.v;
+  [...$("segLang").children].forEach((b) =>
+    b.classList.toggle("on", b.dataset.v === CFG.language));
 }
 
 function pickGoal(btn) {
@@ -1382,6 +1429,17 @@ async function saveSettings() {
         custom_prompt: CFG.goal === "custom" ? custom : null,
       }),
     });
+    // 语言是账号级设置，单独一个接口
+    if (CFG.language) {
+      try {
+        await api("/api/settings/language", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ language: CFG.language }),
+        });
+        loadQuota();
+      } catch (e) { toast("语言设置失败：" + e.message, true); }
+    }
     CFG.custom_prompt = custom;
     closeSettings();
     const L = { shorter: "简短", default: "默认", longer: "详尽" }[CFG.length];
@@ -1682,7 +1740,8 @@ Object.assign(ACTIONS, {
   setMode, startResearch, importResearch, toggleAllResearch, restoreResearch,
   restoreTasks, cancelResearch, dismissTask, useFastMode, loadQuota, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
-  openSettings, closeSettings, pickLen, pickGoal, saveSettings,
+  openSettings, closeSettings, pickLen, pickGoal, pickLang, saveSettings,
+  loadReportSuggest, useReportIdea,
   renameNotebook, delNotebook, clearHistory,
   srcRename, srcRefresh, srcGuide, srcFulltext,
   addLabel, autoLabel, delLabel,
