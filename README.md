@@ -46,6 +46,7 @@ Linux / macOS 用 `./scripts/nb`，参数相同。启动界面用 `./scripts/py 
 ## 文档
 
 - 📖 [完整使用指南](docs/使用指南.md) —— 登录方式、CLI 全集、Python API、MCP 接入
+- 🤖 [Arena Agent 接入指南](docs/arena-agent.md) —— 让 Agent 在当前工作分支调用 NotebookLM
 - 🔧 [Windows 排查](docs/Windows排查.md) —— 装不上、登录失败、乱码等
 
 ## 目录

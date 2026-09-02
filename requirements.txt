@@ -1,4 +1,4 @@
-notebooklm-py>=0.8.1
+notebooklm-py[mcp]>=0.8.1
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
