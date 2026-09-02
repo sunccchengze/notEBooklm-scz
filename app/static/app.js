@@ -23,7 +23,10 @@ async function api(path, opts) {
     return r;
   }
   const j = await r.json();
-  if (!r.ok || j.error) throw new Error((j.hint ? j.hint + "\n" : "") + (j.error || "请求失败"));
+  // 先说什么错了，再说怎么办 —— 之前反着拼，读起来很别扭
+  if (!r.ok || j.error) {
+    throw new Error((j.error || "请求失败") + (j.hint ? "\n" + j.hint : ""));
+  }
   return j;
 }
 
@@ -100,6 +103,7 @@ async function boot() {
     scPages[t] = smooth($("page-" + t));
   });
 
+  loadQuota();
   // 显示代码版本，方便确认浏览器跑的是不是最新代码
   try {
     const v = await api("/api/version");
@@ -652,10 +656,39 @@ async function delNote(id) {
 
 // ---------------------------------------------------------------- 研究
 
+let QUOTA = null;
+
+/* 拉取账号配额。深度研究在免费账号是 10 次/月（唯一按月计的配额），
+   用完后 Google 会直接丢弃任务而不给明确报错 ——
+   这是「研究莫名其妙失败」最常见的原因，所以要显式告诉用户。 */
+async function loadQuota() {
+  try {
+    const r = await fetch("/api/settings");
+    QUOTA = await r.json();
+  } catch { QUOTA = null; }
+  renderQuota();
+}
+
+function renderQuota() {
+  const el = $("quotaTip");
+  if (!el) return;
+  if (!QUOTA || !QUOTA.quota || !QUOTA.quota.name) { el.textContent = ""; return; }
+  const q = QUOTA.quota;
+  const isFree = QUOTA.tier === 1;
+  if (RMODE === "deep") {
+    el.innerHTML = `你的账号：${esc(q.name)} · 深度研究 <b>${esc(q.deep || "未知")}</b>` +
+      (isFree ? `<br><span style="color:var(--error)">免费账号深度研究每月仅 10 次，
+         用完后 Google 会直接丢弃任务且不给明确报错。建议优先用快速模式。</span>` : "");
+  } else {
+    el.innerHTML = `你的账号：${esc(q.name)} · 快速研究不占深度配额`;
+  }
+}
+
 function setMode(m) {
   RMODE = m;
   $("mode-fast").classList.toggle("on", m === "fast");
   $("mode-deep").classList.toggle("on", m === "deep");
+  renderQuota();
 }
 
 /* 生成任务在刷新后同样会丢进度条。把它们接回来：
@@ -740,7 +773,10 @@ async function startResearch() {
     RTASK = r.task_id;
     pollResearch(r.task_id, CUR.id);
   } catch (e) {
-    $("rResult").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    // 之前这里用 .empty 裸文字，既没标题也没重试按钮，
+    // 而且 api() 把 hint 拼在 error 前面，读起来是倒的
+    if (RMODE === "deep") DEEP_FAILS++;
+    $("rResult").innerHTML = errBlock(e.message);
   }
 }
 
@@ -1577,7 +1613,7 @@ Object.assign(ACTIONS, {
   pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
   setMode, startResearch, importResearch, toggleAllResearch, restoreResearch,
-  restoreTasks, cancelResearch, dismissTask, useFastMode, gen, openFolder,
+  restoreTasks, cancelResearch, dismissTask, useFastMode, loadQuota, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
   renameNotebook, delNotebook, clearHistory,

@@ -99,8 +99,19 @@ def _friendly(exc: Exception) -> tuple[int, str, str]:
         return 504, "请求超时", "网络较慢或 Google 侧繁忙，请稍后重试"
     if "network" in low or "connect" in low or "dns" in low:
         return 502, "连不上 Google", "检查网络代理后重试"
-    if "quota" in low or "rate" in low or "429" in low:
-        return 429, "触发频率限制", "稍等几分钟再试"
+    if "quota" in low or "exhausted" in low or "limit exceeded" in low:
+        return 429, "配额已用完", (
+            "免费账号的深度研究每月只有 10 次，其他生成也有每日上限。"
+            "换用「快速」模式，或等配额重置（日配额 24 小时、深度研究 30 天）"
+        )
+    if "rate" in low or "429" in low or "too many" in low:
+        return 429, "请求太频繁", "稍等几分钟再试"
+    if "artifactpendingtimeout" in low:
+        return 504, "任务一直在排队", "Google 的生成队列繁忙，稍后重新生成即可"
+    if "artifactinprogresstimeout" in low:
+        return 504, "生成没能在预期时间内完成", "任务可能仍在 Google 侧继续，稍后到「已生成的内容」里刷新看看"
+    if "featureunavailable" in low:
+        return 403, "这个功能当前不可用", "可能是账号权限或该类型暂未开放"
     if "short videos" in low or "fixed visual style" in low:
         return 400, "短视频不支持自选画面风格", "短视频的风格由 Google 固定，请不要设置风格或画面描述"
     if "cinematic" in low and "style_prompt" in low:
@@ -998,6 +1009,25 @@ async def api_share(body: ShareBody) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- 生成
 
+#: 各类产物的等待预算。数字取自官方 docs/troubleshooting.md：
+#: 音频 1200s、普通视频 1800s、电影感视频 3600s。
+#: 我原来一律用 1800，电影感视频会被提前判超时。
+_GEN_TIMEOUT = {
+    "audio": 1200,
+    "video": 1800,
+    "cinematic": 3600,
+    "slides": 900,
+    "infographic": 900,
+    "datatable": 600,
+    "mindmap": 600,
+    "quiz": 600,
+    "flashcards": 600,
+    "study": 600,
+    "briefing": 600,
+    "blog": 600,
+    "concept": 600,
+}
+
 _TASKS: dict[str, dict[str, Any]] = {}
 
 #: 生成任务也要落盘。音频视频动辄几分钟，
@@ -1155,7 +1185,7 @@ async def api_generate(body: GenerateBody) -> dict[str, Any]:
 
     async def _run() -> None:
         try:
-            await a.wait_for_completion(nb, tid, timeout=1800)
+            await a.wait_for_completion(nb, tid, timeout=_GEN_TIMEOUT.get(k, 900))
             _TASKS[tid]["state"] = "done"
         except Exception as e:  # noqa: BLE001
             # 同样不能把英文异常原样丢给界面
@@ -1659,24 +1689,46 @@ async def api_note_from_answer(body: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- 账号设置
 
+#: 官方 docs/quota-limits.md 的配额表（2026-07-09 快照）。
+#: tier 数字来自 AccountLimits.tier。深度研究是唯一按月计的配额，
+#: 免费账号只有 10 次/月 —— 这是「研究莫名其妙失败」的常见原因。
+_TIERS = {
+    1: {"name": "标准（免费）", "deep": "10 次/月", "audio": "3 次/天",
+        "video": "3 次/天", "cinematic": "不支持", "report": "10 次/天", "chat": "50 次/天"},
+    4: {"name": "Google AI Plus", "deep": "3 次/天", "audio": "6 次/天",
+        "video": "6 次/天", "cinematic": "不支持", "report": "20 次/天", "chat": "200 次/天"},
+    2: {"name": "Google AI Pro", "deep": "20 次/天", "audio": "20 次/天",
+        "video": "20 次/天", "cinematic": "2 次/天", "report": "100 次/天", "chat": "500 次/天"},
+    3: {"name": "Ultra 20TB", "deep": "75 次/天", "audio": "100 次/天",
+        "video": "100 次/天", "cinematic": "10 次/天", "report": "500 次/天", "chat": "2500 次/天"},
+    6: {"name": "Ultra 30TB", "deep": "200 次/天", "audio": "200 次/天",
+        "video": "200 次/天", "cinematic": "20 次/天", "report": "1000 次/天", "chat": "5000 次/天"},
+}
+
+
 @app.get("/api/settings")
 async def api_settings() -> dict[str, Any]:
-    """账号级设置与用量额度，对应网页版右上角 Settings。"""
+    """账号级设置与配额。tier 对照官方 quota-limits.md 展开成中文。"""
     client = await get_client()
-    out: dict[str, Any] = {}
+    out: dict[str, Any] = {"language": "", "tier": None, "quota": {}, "limits": {}}
     try:
         out["language"] = await client.settings.get_output_language() or ""
     except Exception:
-        out["language"] = ""
+        pass
     try:
         lim = await client.settings.get_account_limits()
+        tier = getattr(lim, "tier", None)
+        out["tier"] = tier
         out["limits"] = {
-            k: getattr(lim, k)
-            for k in dir(lim)
-            if not k.startswith("_") and isinstance(getattr(lim, k, None), (int, float, str))
+            "notebook_limit": getattr(lim, "notebook_limit", None),
+            "source_limit": getattr(lim, "source_limit", None),
         }
-    except Exception:
-        out["limits"] = {}
+        if isinstance(tier, int) and tier in _TIERS:
+            out["quota"] = _TIERS[tier]
+        else:
+            out["quota"] = {"name": f"未知套餐（tier={tier}）"}
+    except Exception as e:
+        out["error"] = _err_cn(e)
     return out
 
 
