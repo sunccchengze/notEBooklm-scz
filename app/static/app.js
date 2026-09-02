@@ -716,12 +716,8 @@ async function restoreResearch() {
   } else if (r.state === "done" && r.sources?.length) {
     renderResearchResult(r.sources);
   } else if (r.state === "error") {
-    $("rResult").innerHTML =
-      `<div class="empty">${esc(r.error || "研究失败")}
-         ${r.detail ? `<details class="refs" style="margin-top:12px;text-align:left">
-            <summary>技术细节</summary>
-            <div class="ref">${esc(r.detail)}</div></details>` : ""}
-         <br><button class="mini" data-act="startResearch">重新研究</button></div>`;
+    if (RMODE === "deep") DEEP_FAILS++;
+    $("rResult").innerHTML = errBlock(r.error, r.detail);
   }
 }
 
@@ -767,16 +763,13 @@ async function pollResearch(tid, nbId) {
         $("rResult").innerHTML = '<div class="empty">没有找到结果</div>';
         return;
       }
+      if (RMODE === "deep") DEEP_FAILS = 0;
       renderResearchResult(list);
       return;
     }
     if (s.state === "error") {
-      $("rResult").innerHTML =
-        `<div class="empty">${esc(s.error || "研究失败")}
-           ${s.detail ? `<details class="refs" style="margin-top:12px;text-align:left">
-              <summary>技术细节</summary>
-              <div class="ref">${esc(s.detail)}</div></details>` : ""}
-           <br><button class="mini" data-act="startResearch">重新研究</button></div>`;
+      if (RMODE === "deep") DEEP_FAILS++;
+      $("rResult").innerHTML = errBlock(s.error, s.detail);
       return;
     }
     // 还在跑：把真实状态和已用时间显示出来，
@@ -835,6 +828,41 @@ async function cancelResearch() {
     $("rResult").innerHTML = '<div class="empty">已取消</div>';
     toast("已取消");
   } catch (e) { toast(e.message, true); }
+}
+
+/* 研究失败的展示块。
+   之前复用 .empty（那是「暂无内容」的居中样式），
+   长句居中很难读，裸 <br> 还会留下渲染瑕疵。 */
+let DEEP_FAILS = 0;
+
+function errBlock(msg, detail) {
+  const hint = (RMODE === "deep" && DEEP_FAILS >= 2)
+    ? `<p class="hint" style="margin-top:10px">
+         深度模式已经连续失败 ${DEEP_FAILS} 次，基本可以确定是 Google 侧
+         没给这个账号开放。建议就用快速模式。</p>`
+    : "";
+  return `<div class="err-box">
+      <div class="err-head">
+        <svg class="ico"><use href="#i-warn"/></svg>
+        <span>这次研究没能完成</span>
+      </div>
+      <p class="err-msg">${esc(msg || "研究失败")}</p>
+      ${hint}
+      ${detail ? `<details class="refs">
+          <summary>技术细节</summary>
+          <div class="ref">${esc(detail)}</div>
+        </details>` : ""}
+      <div class="err-acts">
+        <button class="mini" data-act="startResearch">重新研究</button>
+        <button class="mini" data-act="useFastMode">改用快速模式</button>
+      </div>
+    </div>`;
+}
+
+/** 一键切到快速模式并重新发起 */
+function useFastMode() {
+  setMode("fast");
+  startResearch();
 }
 
 function renderResearchResult(list) {
@@ -1546,7 +1574,7 @@ Object.assign(ACTIONS, {
   pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
   setMode, startResearch, importResearch, toggleAllResearch, restoreResearch,
-  restoreTasks, cancelResearch, dismissTask, gen, openFolder,
+  restoreTasks, cancelResearch, dismissTask, useFastMode, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
   renameNotebook, delNotebook, clearHistory,

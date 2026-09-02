@@ -468,8 +468,9 @@ def _research_error_cn(exc: Exception) -> str:
     text = f"{name}: {exc}".lower()
 
     if "not_found" in text or "找不到这个研究任务" in str(exc):
-        return ("Google 把这个研究任务丢弃了。这是它那边的问题，"
-                "重新发起一次通常就好；深度模式不稳时可以先用「快速」模式。")
+        return ("Google 把这个深度研究任务丢弃了。深度模式走的是它家另一条"
+                "接口（DiscoverSourcesAsync），目前并非所有账号都稳定可用。"
+                "「快速」模式走的是另一条链路，通常没问题，建议改用它。")
     if "no_research" in text or "始终没有认领" in str(exc):
         return ("Google 一直没有认领这次研究。通常是深度模式排队失败，"
                 "建议换个说法重试，或先用「快速」模式拿结果。")

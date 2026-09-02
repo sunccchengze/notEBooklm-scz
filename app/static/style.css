@@ -748,3 +748,31 @@ h1, h2, h3 {
 
 /* 全文预览保留换行 */
 .text.pre { white-space: pre-wrap; font-size: 14px; line-height: 1.75; }
+
+/* 出错提示块 —— 左对齐，长句才好读 */
+.err-box {
+  margin-top: var(--s-md);
+  padding: var(--s-md);
+  background: var(--surface-soft);
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--error);
+  border-radius: var(--r-md);
+  text-align: left;
+}
+.err-head {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 14px; font-weight: 600; color: var(--body-strong);
+  margin-bottom: 7px;
+}
+.err-head .ico { color: var(--error); width: 17px; height: 17px; }
+.err-msg {
+  margin: 0; font-size: 14px; line-height: 1.75; color: var(--body);
+}
+.err-box .refs { margin-top: 10px; }
+.err-acts {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-top: var(--s-md);
+}
+.err-acts .mini {
+  border: 1px solid var(--hairline); background: var(--canvas);
+}
+.err-acts .mini:hover { background: var(--surface-card); border-color: var(--muted-soft); }
