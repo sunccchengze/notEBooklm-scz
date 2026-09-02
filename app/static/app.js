@@ -869,7 +869,9 @@ async function pollTask(tid, kind, row, nbId) {
 
     if (s.state === "done") {
       row.innerHTML = `<div class="task-name">${NAMES[kind]} 已完成</div>
-        <a class="dl" href="/api/download/${nbId}/${kind}" download>下载</a>`;
+        <a class="dl-btn" href="/api/download/${encodeURIComponent(nbId)}/${encodeURIComponent(kind)}"
+           download><svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
+      if ($("page-studio").classList.contains("active")) loadArtifacts();
       toast(`${NAMES[kind]} 生成完成`);
       return;
     }
@@ -1021,6 +1023,17 @@ async function saveSettings() {
 
 // ---------------------------------------------------------------- 产物库
 
+//: 支持下载的产物类型（与后端 _DL_BY_TYPE 对应）
+const DOWNLOADABLE = new Set(["audio", "video", "report", "quiz", "flashcards",
+                              "mind_map", "infographic", "slide_deck", "data_table"]);
+
+//: 各类型下载下来是什么文件，显示在按钮提示里
+const TYPE_EXT = {
+  audio: "MP3", video: "MP4", report: "Markdown", quiz: "Markdown",
+  flashcards: "Markdown", mind_map: "JSON", infographic: "PNG",
+  slide_deck: "PDF", data_table: "CSV",
+};
+
 const TYPE_CN = {
   audio: "播客", video: "视频", report: "报告", quiz: "测验",
   flashcards: "闪卡", mind_map: "思维导图", infographic: "信息图",
@@ -1048,6 +1061,11 @@ async function loadArtifacts() {
           <div class="item-title">${esc(x.title || TYPE_CN[x.type] || x.type)} ${st}</div>
           <div class="item-sub">${TYPE_CN[x.type] || x.type}${dur} · ${esc(x.created)}</div>
         </div>
+        ${x.done && DOWNLOADABLE.has(x.type)
+          ? `<a class="dl-btn" href="/api/download-artifact/${encodeURIComponent(mine)}/${encodeURIComponent(x.id)}"
+               download title="下载 ${TYPE_EXT[x.type] || "文件"}">
+               <svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`
+          : ""}
         <span class="nb-ops">
           ${x.done ? `<button class="x" data-act="artifactPrompt" data-a0="${esc(x.id)}" title="查看生成提示词">☰</button>` : ""}
           ${x.done ? `<button class="x" data-act="exportArtifact" data-a0="${esc(x.id)}" data-a1="${esc(x.title)}" title="导出到 Google 文档">↗</button>` : ""}
@@ -1111,6 +1129,44 @@ async function exportArtifact(id, title) {
     toast(r.ok ? "已导出到 Google 文档" : (r.error || "导出失败"), !r.ok);
   } catch (e) { toast(e.message, true); }
 }
+
+/* 下载失败时给提示。
+   <a download> 直连接口，出错会收到 JSON 而不是文件，
+   浏览器不会报错，用户只会觉得"点了没反应"。 */
+document.addEventListener("click", async (e) => {
+  const a = e.target.closest("a.dl-btn");
+  if (!a) return;
+  e.preventDefault();
+  if (a.dataset.busy) return;
+  a.dataset.busy = "1";
+  const span = a.querySelector("span");
+  const old = span ? span.textContent : "";
+  if (span) span.textContent = "准备中…";
+  try {
+    const r = await fetch(a.href);
+    const ct = r.headers.get("content-type") || "";
+    if (!r.ok || ct.includes("json")) {
+      let msg = "下载失败";
+      try { const j = await r.json(); msg = j.error || msg; if (j.hint) msg += "\n" + j.hint; } catch {}
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const name = decodeURIComponent(
+      (r.headers.get("content-disposition") || "").match(/filename\*?=(?:UTF-8'')?"?([^";]+)/)?.[1] || "download");
+    const u = URL.createObjectURL(blob);
+    const tmp = document.createElement("a");
+    tmp.href = u; tmp.download = name;
+    document.body.appendChild(tmp); tmp.click(); tmp.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 4000);
+    if (span) span.textContent = "已下载";
+    setTimeout(() => { if (span) span.textContent = old; }, 1600);
+  } catch (err) {
+    toast(err.message, true);
+    if (span) span.textContent = old;
+  } finally {
+    delete a.dataset.busy;
+  }
+});
 
 // ---------------------------------------------------------------- 分享
 

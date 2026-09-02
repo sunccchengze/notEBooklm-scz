@@ -780,24 +780,81 @@ _DL = {
 }
 
 
+#: ArtifactType 的 value -> (下载方法, 扩展名)。产物库按 id 下载时用。
+_DL_BY_TYPE = {
+    "audio": ("download_audio", "mp3"),
+    "video": ("download_video", "mp4"),
+    "quiz": ("download_quiz", "md"),
+    "flashcards": ("download_flashcards", "md"),
+    "slide_deck": ("download_slide_deck", "pdf"),
+    "infographic": ("download_infographic", "png"),
+    "mind_map": ("download_mind_map", "json"),
+    "data_table": ("download_data_table", "csv"),
+    "report": ("download_report", "md"),
+}
+
+
+def _safe_name(text: str, fallback: str) -> str:
+    """把标题清成能当文件名的样子。"""
+    bad = '<>:"/\\|?*'
+    out = "".join("_" if c in bad or ord(c) < 32 else c for c in (text or "")).strip(" .")
+    return out[:60] or fallback
+
+
+async def _download(notebook_id: str, method: str, ext: str, stem: str,
+                    artifact_id: str | None = None):
+    client = await get_client()
+    path = OUT / f"{stem}.{ext}"
+    fn = getattr(client.artifacts, method)
+    args = (notebook_id, str(path))
+    kwargs: dict[str, Any] = {}
+    if artifact_id:
+        kwargs["artifact_id"] = artifact_id
+    # quiz / flashcards 默认导出 json，这里要 markdown
+    if method in ("download_quiz", "download_flashcards"):
+        kwargs["output_format"] = "markdown"
+    try:
+        await fn(*args, **kwargs)
+    except TypeError:
+        kwargs.pop("output_format", None)
+        await fn(*args, **kwargs)
+    if not path.exists():
+        raise HTTPException(404, "还没有生成好的产物，或它还在生成中")
+    return FileResponse(path, filename=path.name)
+
+
+@app.get("/api/download-artifact/{notebook_id}/{artifact_id}")
+async def api_download_artifact(notebook_id: str, artifact_id: str):
+    """按产物 id 精确下载。同一类型生成过多次时靠它区分。"""
+    client = await get_client()
+    art = None
+    try:
+        items = await client.artifacts.list(notebook_id)
+        for x in items:
+            if (getattr(x, "id", "") or getattr(x, "artifact_id", "")) == artifact_id:
+                art = x
+                break
+    except Exception:
+        pass
+    if art is None:
+        raise HTTPException(404, "找不到这个内容，可能已被删除")
+
+    t = getattr(art, "kind", None) or getattr(art, "type", None)
+    tv = getattr(t, "value", str(t or ""))
+    if tv not in _DL_BY_TYPE:
+        raise HTTPException(400, f"这个类型不支持下载：{tv}")
+    method, ext = _DL_BY_TYPE[tv]
+    stem = _safe_name(getattr(art, "title", "") or tv, tv)
+    return await _download(notebook_id, method, ext, stem, artifact_id)
+
+
 @app.get("/api/download/{notebook_id}/{kind}")
 async def api_download(notebook_id: str, kind: str):
+    """按生成类型下载最新的一个（刚生成完的任务行用）。"""
     if kind not in _DL:
         raise HTTPException(400, f"不支持下载: {kind}")
-    client = await get_client()
     method, ext = _DL[kind]
-    path = OUT / f"{kind}_{notebook_id[:8]}.{ext}"
-    fn = getattr(client.artifacts, method)
-    try:
-        if kind in ("quiz", "flashcards"):
-            await fn(notebook_id, str(path), output_format="markdown")
-        else:
-            await fn(notebook_id, str(path))
-    except TypeError:
-        await fn(notebook_id, str(path))
-    if not path.exists():
-        raise HTTPException(404, "还没有生成好的产物")
-    return FileResponse(path, filename=path.name)
+    return await _download(notebook_id, method, ext, f"{kind}_{notebook_id[:8]}")
 
 
 @app.get("/api/artifacts/{notebook_id}")
