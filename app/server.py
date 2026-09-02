@@ -616,7 +616,11 @@ def _research_load() -> None:
         from notebooklm import ResearchSource
 
         data = json.loads(_RESEARCH_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
         for tid, item in data.items():
+            if not isinstance(item, dict):
+                continue
             objs = [ResearchSource.from_public_dict(o) for o in item.pop("_objs", [])]
             # 上次没跑完就被关掉的，标成中断，别让界面一直转圈
             if item.get("state") == "running":
@@ -767,12 +771,17 @@ _DEEP_LOG_FILE = OUT / "deep_research_log.json"
 
 
 def _deep_log_read() -> list[dict[str, Any]]:
+    """读台账。文件被改坏时一律返回空列表，不能让脏数据流进统计。"""
     try:
-        if _DEEP_LOG_FILE.exists():
-            return json.loads(_DEEP_LOG_FILE.read_text(encoding="utf-8"))
+        if not _DEEP_LOG_FILE.exists():
+            return []
+        data = json.loads(_DEEP_LOG_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        # 只保留结构正确的条目
+        return [x for x in data if isinstance(x, dict) and "at" in x]
     except Exception:
-        pass
-    return []
+        return []
 
 
 def _deep_log_add(tid: str, query: str) -> None:
@@ -1318,7 +1327,12 @@ def _tasks_load() -> None:
     try:
         if not _TASKS_FILE.exists():
             return
-        for tid, d in json.loads(_TASKS_FILE.read_text(encoding="utf-8")).items():
+        raw = json.loads(_TASKS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return
+        for tid, d in raw.items():
+            if not isinstance(d, dict):
+                continue
             if d.get("state") == "running":
                 # 程序重启后后台协程已经没了，状态永远不会再更新
                 d["state"] = "error"
