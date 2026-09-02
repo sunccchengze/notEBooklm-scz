@@ -680,7 +680,8 @@ async function restoreTasks() {
         <a class="dl-btn" href="/api/download/${encodeURIComponent(mine)}/${encodeURIComponent(t.kind)}"
            download><svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
     } else if (t.state === "error") {
-      row.innerHTML = `<div class="task-name err">${esc(name)} ${esc(t.error || "失败")}</div>`;
+      row.innerHTML = `<div class="task-name err">${esc(name)} 失败</div>
+        <span class="hint-inline">${esc(t.error || "")}</span>`;
     } else {
       row.innerHTML = `<div class="spin"></div>
         <div class="task-name">${esc(name)} 生成中…（刷新前已开始）</div>
@@ -715,7 +716,10 @@ async function restoreResearch() {
   } else if (r.state === "error") {
     $("rResult").innerHTML =
       `<div class="empty">${esc(r.error || "研究失败")}
-         <br><br><button class="mini" data-act="startResearch">重新研究</button></div>`;
+         ${r.detail ? `<details class="refs" style="margin-top:12px;text-align:left">
+            <summary>技术细节</summary>
+            <div class="ref">${esc(r.detail)}</div></details>` : ""}
+         <br><button class="mini" data-act="startResearch">重新研究</button></div>`;
   }
 }
 
@@ -767,7 +771,10 @@ async function pollResearch(tid, nbId) {
     if (s.state === "error") {
       $("rResult").innerHTML =
         `<div class="empty">${esc(s.error || "研究失败")}
-           <br><br><button class="mini" data-act="startResearch">重新研究</button></div>`;
+           ${s.detail ? `<details class="refs" style="margin-top:12px;text-align:left">
+              <summary>技术细节</summary>
+              <div class="ref">${esc(s.detail)}</div></details>` : ""}
+           <br><button class="mini" data-act="startResearch">重新研究</button></div>`;
       return;
     }
     // 还在跑：把真实状态和已用时间显示出来，
@@ -1121,8 +1128,9 @@ async function pollTask(tid, kind, row, nbId) {
       return;
     }
     if (s.state === "error") {
-      row.innerHTML = `<div class="task-name err">${NAMES[kind]} 失败</div>`;
-      toast(s.error || "生成失败", true);
+      row.innerHTML = `<div class="task-name err">${esc(NAMES[kind])} 失败</div>
+        <span class="hint-inline">${esc(s.error || "")}</span>`;
+      toast(`${NAMES[kind]}失败：${s.error || "未知原因"}`, true);
       return;
     }
   }

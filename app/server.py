@@ -266,7 +266,7 @@ async def api_auth() -> dict[str, Any]:
         client = await get_client()
         return {"ok": True, "email": await client.get_account_email() or "已登录"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": _err_cn(e)}
 
 
 # ---------------------------------------------------------------- 笔记本
@@ -456,6 +456,35 @@ def _research_load() -> None:
 _research_load()
 
 
+def _err_cn(exc: Exception) -> str:
+    """任何异常 -> 中文一句话（含建议）。供后台任务与容错分支使用。"""
+    _, msg, hint = _friendly(exc)
+    return f"{msg}：{hint}" if hint and hint != msg else msg
+
+
+def _research_error_cn(exc: Exception) -> str:
+    """把研究失败的异常翻成用户看得懂的话，并给出下一步怎么办。"""
+    name = type(exc).__name__
+    text = f"{name}: {exc}".lower()
+
+    if "no_research" in text:
+        return ("Google 没有认领这次研究任务。通常是它那边没真正启动，"
+                "换个说法重新发起一次即可。")
+    if "timeout" in text or "timedout" in name.lower():
+        return "研究超时了。Google 侧可能正忙，稍后重试，或改用「快速」模式。"
+    if "ambiguous" in text:
+        return "这个笔记本里有多个研究同时在跑，等前一个结束再试。"
+    if "unavailable" in text or "no run" in text:
+        return "Google 没能启动深度研究，换个说法或稍后再试。"
+    if "quota" in text or "rate" in text or "429" in text:
+        return "触发了频率限制，等几分钟再试。"
+    if "auth" in text or "cookie" in text or "401" in text:
+        return "登录已过期，请重新运行 scripts\\nb.ps1 login。"
+    if "network" in text or "connect" in text or "dns" in text:
+        return "网络连不上 Google，检查代理后重试。"
+    return f"研究失败（{name}）。可以换个说法重新发起。"
+
+
 async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
                               timeout: float = 2400.0) -> Any:
     """自己轮询研究进度。
@@ -581,7 +610,10 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
                 _RESEARCH[tid]["state"] = "done"
         except Exception as e:  # noqa: BLE001
             _RESEARCH[tid]["state"] = "error"
-            _RESEARCH[tid]["error"] = f"{type(e).__name__}: {e}"
+            # 之前直接把 "ResearchTimeoutError: ... no_research" 这种
+            # 英文异常原样丢给界面，用户完全看不懂。
+            _RESEARCH[tid]["error"] = _research_error_cn(e)
+            _RESEARCH[tid]["detail"] = f"{type(e).__name__}: {e}"[:300]
         _research_save()
 
     _research_save()
@@ -898,7 +930,7 @@ async def api_share_status(notebook_id: str) -> dict[str, Any]:
         url = await client.notebooks.get_share_url(notebook_id)
         return {"public": bool(getattr(st, "is_public", False)), "url": url}
     except Exception as e:
-        return {"public": False, "url": "", "error": str(e)}
+        return {"public": False, "url": "", "error": _err_cn(e)}
 
 
 @app.post("/api/share")
@@ -1071,7 +1103,9 @@ async def api_generate(body: GenerateBody) -> dict[str, Any]:
             await a.wait_for_completion(nb, tid, timeout=1800)
             _TASKS[tid]["state"] = "done"
         except Exception as e:  # noqa: BLE001
-            _TASKS[tid].update(state="error", error=str(e))
+            # 同样不能把英文异常原样丢给界面
+            _TASKS[tid].update(state="error", error=_err_cn(e),
+                               detail=f"{type(e).__name__}: {e}"[:300])
         _tasks_save()
 
     asyncio.create_task(_run())
@@ -1264,7 +1298,7 @@ async def api_artifact_prompt(notebook_id: str, artifact_id: str) -> dict[str, A
     try:
         return {"prompt": await client.artifacts.get_prompt(notebook_id, artifact_id) or ""}
     except Exception as e:
-        return {"prompt": "", "error": str(e)}
+        return {"prompt": "", "error": _err_cn(e)}
 
 
 @app.post("/api/artifacts/export")
@@ -1281,7 +1315,7 @@ async def api_artifact_export(body: dict[str, Any]) -> dict[str, Any]:
         )
         return {"ok": True, "result": str(r)[:400]}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": _err_cn(e)}
 
 
 @app.post("/api/slides/revise")
@@ -1326,7 +1360,7 @@ async def api_share_users(notebook_id: str) -> dict[str, Any]:
             "users": out,
         }
     except Exception as e:
-        return {"public": False, "users": [], "error": str(e)}
+        return {"public": False, "users": [], "error": _err_cn(e)}
 
 
 @app.post("/api/share-users")
@@ -1362,7 +1396,7 @@ async def api_open_folder() -> dict[str, Any]:
             subprocess.Popen(["xdg-open", str(OUT)])
         return {"ok": True}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": _err_cn(e)}
 
 
 # ---------------------------------------------------------------- 标签
@@ -1478,7 +1512,7 @@ async def api_source_guide(notebook_id: str, source_id: str) -> dict[str, Any]:
     try:
         g = await client.sources.get_guide(notebook_id, source_id)
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _err_cn(e)}
     # SourceGuide 只有 summary 和 keywords 两个字段，没有 questions。
     # 之前读 questions/key_questions 永远是空，界面上那块从来没出现过。
     kws = list(getattr(g, "keywords", None) or ())
@@ -1625,7 +1659,7 @@ async def api_mindmap_tree(notebook_id: str, mind_map_id: str) -> dict[str, Any]
     try:
         return {"tree": await client.mind_maps.get_tree(notebook_id, mind_map_id) or {}}
     except Exception as e:
-        return {"tree": {}, "error": str(e)}
+        return {"tree": {}, "error": _err_cn(e)}
 
 
 @app.delete("/api/mindmaps/{notebook_id}/{mind_map_id}")
@@ -1724,7 +1758,7 @@ async def api_source_fresh(notebook_id: str, source_id: str) -> dict[str, Any]:
     try:
         return {"stale": bool(await client.sources.check_freshness(notebook_id, source_id))}
     except Exception as e:
-        return {"stale": False, "error": str(e)}
+        return {"stale": False, "error": _err_cn(e)}
 
 
 # ---------------------------------------------------------------- 研究补充
@@ -1737,7 +1771,7 @@ async def api_research_cancel(notebook_id: str, task_id: str) -> dict[str, Any]:
         await client.research.cancel(notebook_id, task_id)
         return {"ok": True}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": _err_cn(e)}
 
 
 # ---------------------------------------------------------------- 静态
