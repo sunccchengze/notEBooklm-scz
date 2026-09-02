@@ -1,4 +1,4 @@
-# notebooklm CLI 封装 (Windows / PowerShell)
+﻿﻿# notebooklm CLI 封装 (Windows / PowerShell)
 # 自动使用本仓库 .venv，并把认证数据存在仓库内 .notebooklm\
 $Root = Split-Path -Parent $PSScriptRoot
 $NbExe = Join-Path $Root ".venv\Scripts\notebooklm.exe"

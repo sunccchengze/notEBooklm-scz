@@ -135,3 +135,35 @@ Write-Host "--- where ---";  where.exe python 2>&1
 Write-Host "--- venv ---";   Test-Path .\.venv\Scripts\python.exe
 Write-Host "--- policy ---"; Get-ExecutionPolicy -List
 ```
+
+---
+
+## 「表达式或语句中包含意外的标记 }」+ 中文乱码（如 `瀹夎瀹屾垚`）
+
+**原因**：Windows PowerShell 5.1 读取**没有 BOM** 的 UTF-8 文件时，会按系统 ANSI 代码页（简体中文机器上是 GBK）解码。中文字节被错误还原，字符串引号错位，解析器就会在莫名其妙的地方报「缺少右 }」。
+
+**已修复**：仓库里的 `.ps1` 文件现在都带 UTF-8 BOM，并通过 `.gitattributes` 强制以 CRLF 检出。
+
+```powershell
+git pull
+.\scripts\setup.ps1
+```
+
+**如果你自己改了 .ps1 文件又出现乱码**，保存时要选「UTF-8 with BOM」：
+
+- VS Code：右下角点编码 → Save with Encoding → UTF-8 with BOM
+- 记事本：另存为 → 编码选「带有 BOM 的 UTF-8」
+
+命令行批量修复：
+```powershell
+Get-ChildItem scripts\*.ps1 | ForEach-Object {
+    $c = Get-Content $_.FullName -Raw -Encoding UTF8
+    [System.IO.File]::WriteAllText($_.FullName, $c, (New-Object System.Text.UTF8Encoding $true))
+}
+```
+
+**根治**：升级到 PowerShell 7（默认按 UTF-8 读取，无需 BOM）：
+```powershell
+winget install Microsoft.PowerShell
+```
+之后用 `pwsh` 而不是 `powershell` 启动。

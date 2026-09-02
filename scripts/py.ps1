@@ -1,4 +1,4 @@
-# 用本仓库 .venv 的 python 跑脚本 (Windows / PowerShell)
+﻿﻿# 用本仓库 .venv 的 python 跑脚本 (Windows / PowerShell)
 $Root = Split-Path -Parent $PSScriptRoot
 $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 
