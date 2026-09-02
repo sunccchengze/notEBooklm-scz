@@ -126,6 +126,38 @@ class ShareBody(BaseModel):
     public: bool
 
 
+class RenameBody(BaseModel):
+    notebook_id: str
+    target_id: str
+    name: str
+
+
+class EmojiBody(BaseModel):
+    notebook_id: str
+    emoji: str
+
+
+class LabelBody(BaseModel):
+    notebook_id: str
+    name: str = ""
+    emoji: str = ""
+    label_id: str | None = None
+    source_ids: list[str] = []
+
+
+class CollectionBody(BaseModel):
+    name: str = ""
+    collection_id: str | None = None
+    notebook_ids: list[str] = []
+
+
+class NoteUpdateBody(BaseModel):
+    notebook_id: str
+    note_id: str
+    title: str
+    content: str
+
+
 class ChatConfigBody(BaseModel):
     notebook_id: str
     length: str = "default"   # default | longer | shorter
@@ -445,23 +477,47 @@ _FALLBACK_PROMPTS = [
 
 
 @app.get("/api/history/{notebook_id}")
-async def api_history(notebook_id: str) -> list[dict[str, Any]]:
-    """历史对话。get_history 返回 list[tuple[question, answer]]。"""
+async def api_history(notebook_id: str) -> dict[str, Any]:
+    """历史对话。get_history 返回 list[tuple[question, answer]]。
+
+    出错时把原因带回前端，不再静默返回空列表（那样只会看到一片空白）。
+    """
     client = await get_client()
     try:
-        turns = await client.chat.get_history(notebook_id, limit=100)
-    except Exception:
-        return []
+        conv_id = await client.chat.get_conversation_id(notebook_id)
+    except Exception as e:
+        return {"turns": [], "error": f"读取会话失败: {e}"}
+
+    if not conv_id:
+        return {"turns": [], "conversation_id": None}
+
+    try:
+        turns = await client.chat.get_history(notebook_id, limit=100,
+                                              conversation_id=conv_id)
+    except Exception as e:
+        return {"turns": [], "conversation_id": conv_id, "error": f"读取历史失败: {e}"}
+
     out: list[dict[str, Any]] = []
     for t in turns or []:
         if isinstance(t, (tuple, list)) and len(t) >= 2:
             q, a = str(t[0] or ""), str(t[1] or "")
-        else:  # 兼容将来可能改成对象
+        else:
             q = str(getattr(t, "question", "") or "")
             a = str(getattr(t, "answer", "") or "")
         if q or a:
             out.append({"q": q, "a": a})
-    return out[-40:]
+    return {"turns": out[-60:], "conversation_id": conv_id}
+
+
+@app.delete("/api/history/{notebook_id}")
+async def api_history_clear(notebook_id: str) -> dict[str, Any]:
+    """清空当前对话。对应网页版聊天区的清除。"""
+    client = await get_client()
+    conv_id = await client.chat.get_conversation_id(notebook_id)
+    if not conv_id:
+        return {"ok": True, "note": "本来就没有对话"}
+    await client.chat.delete_conversation(notebook_id, conv_id)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- 笔记
@@ -647,6 +703,185 @@ async def api_open_folder() -> dict[str, Any]:
             subprocess.Popen(["open", str(OUT)])
         else:
             subprocess.Popen(["xdg-open", str(OUT)])
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------- 标签
+
+@app.get("/api/labels/{notebook_id}")
+async def api_labels(notebook_id: str) -> list[dict[str, Any]]:
+    """资料标签，对应网页版 Sources 里的分类。"""
+    client = await get_client()
+    try:
+        items = await client.labels.list(notebook_id)
+    except Exception:
+        return []
+    return [
+        {
+            "id": getattr(x, "id", ""),
+            "name": getattr(x, "name", "") or "",
+            "emoji": getattr(x, "emoji", "") or "",
+        }
+        for x in items
+    ]
+
+
+@app.post("/api/labels")
+async def api_label_create(body: LabelBody) -> dict[str, Any]:
+    client = await get_client()
+    lb = await client.labels.create(body.notebook_id, body.name, body.emoji or "")
+    return {"id": getattr(lb, "id", ""), "name": getattr(lb, "name", "")}
+
+
+@app.post("/api/labels/auto")
+async def api_label_auto(body: LabelBody) -> dict[str, Any]:
+    """让 AI 自动给未分类的资料打标签。"""
+    client = await get_client()
+    made = await client.labels.generate(body.notebook_id, scope="unlabeled")
+    return {"count": len(made or [])}
+
+
+@app.delete("/api/labels/{notebook_id}/{label_id}")
+async def api_label_del(notebook_id: str, label_id: str) -> dict[str, Any]:
+    client = await get_client()
+    await client.labels.delete(notebook_id, label_id)
+    return {"ok": True}
+
+
+@app.get("/api/labels/{notebook_id}/{label_id}/sources")
+async def api_label_sources(notebook_id: str, label_id: str) -> list[dict[str, Any]]:
+    client = await get_client()
+    try:
+        items = await client.labels.sources(notebook_id, label_id)
+    except Exception:
+        return []
+    return [{"id": getattr(x, "id", ""), "title": getattr(x, "title", "")} for x in items]
+
+
+# ---------------------------------------------------------------- 合集
+
+@app.get("/api/collections")
+async def api_collections() -> list[dict[str, Any]]:
+    """笔记本合集，对应网页版首页的分组。"""
+    client = await get_client()
+    try:
+        items = await client.collections.list()
+    except Exception:
+        return []
+    return [
+        {"id": getattr(x, "id", ""), "name": getattr(x, "name", "") or "未命名"}
+        for x in items
+    ]
+
+
+@app.post("/api/collections")
+async def api_collection_create(body: CollectionBody) -> dict[str, Any]:
+    client = await get_client()
+    c = await client.collections.create(body.name)
+    return {"id": getattr(c, "id", ""), "name": getattr(c, "name", "")}
+
+
+@app.delete("/api/collections/{collection_id}")
+async def api_collection_del(collection_id: str) -> dict[str, Any]:
+    client = await get_client()
+    await client.collections.delete(collection_id)
+    return {"ok": True}
+
+
+@app.post("/api/collections/add")
+async def api_collection_add(body: CollectionBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.collections.add_notebooks(body.collection_id or "", body.notebook_ids)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 资料增强
+
+@app.post("/api/sources/rename")
+async def api_source_rename(body: RenameBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.sources.rename(body.notebook_id, body.target_id, body.name)
+    return {"ok": True}
+
+
+@app.post("/api/sources/refresh/{notebook_id}/{source_id}")
+async def api_source_refresh(notebook_id: str, source_id: str) -> dict[str, Any]:
+    """重新抓取网页/Drive 资料的最新内容。"""
+    client = await get_client()
+    await client.sources.refresh(notebook_id, source_id)
+    return {"ok": True}
+
+
+@app.get("/api/source-guide/{notebook_id}/{source_id}")
+async def api_source_guide(notebook_id: str, source_id: str) -> dict[str, Any]:
+    """单份资料的 AI 摘要与关键问题，对应网页版点开资料看到的内容。"""
+    client = await get_client()
+    try:
+        g = await client.sources.get_guide(notebook_id, source_id)
+    except Exception as e:
+        return {"error": str(e)}
+    qs = getattr(g, "questions", None) or getattr(g, "key_questions", None) or []
+    return {
+        "summary": getattr(g, "summary", "") or "",
+        "questions": [str(q) for q in qs][:6],
+    }
+
+
+@app.post("/api/sources/drive")
+async def api_source_drive(body: dict[str, Any]) -> dict[str, Any]:
+    """添加 Google Drive 文档。"""
+    client = await get_client()
+    await client.sources.add_drive_file(
+        body["notebook_id"], body["document_id"], title=body.get("title")
+    )
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 笔记本增强
+
+@app.post("/api/notebooks/emoji")
+async def api_nb_emoji(body: EmojiBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.notebooks.set_emoji(body.notebook_id, body.emoji)
+    return {"ok": True}
+
+
+@app.get("/api/notebook-info/{notebook_id}")
+async def api_nb_info(notebook_id: str) -> dict[str, Any]:
+    """笔记本简介与元数据。"""
+    client = await get_client()
+    out: dict[str, Any] = {}
+    try:
+        d = await client.notebooks.get_description(notebook_id)
+        out["description"] = getattr(d, "description", "") or str(d or "")
+    except Exception:
+        out["description"] = ""
+    try:
+        out["summary"] = await client.notebooks.get_summary(notebook_id)
+    except Exception:
+        out["summary"] = ""
+    return out
+
+
+# ---------------------------------------------------------------- 笔记增强
+
+@app.post("/api/notes/update")
+async def api_note_update(body: NoteUpdateBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.notes.update(body.notebook_id, body.note_id, body.content, body.title)
+    return {"ok": True}
+
+
+@app.post("/api/notes/from-answer")
+async def api_note_from_answer(body: dict[str, Any]) -> dict[str, Any]:
+    """把回答直接存成笔记（走官方接口，保留引用）。"""
+    client = await get_client()
+    try:
+        await client.chat.save_answer_as_note(
+            body["notebook_id"], body.get("conversation_id"), body.get("turn_key")
+        )
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}

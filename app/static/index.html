@@ -92,6 +92,15 @@
 
       <p class="sec-label">当前资料</p>
       <div class="list" id="srcList"><div class="empty">未选择笔记本</div></div>
+
+      <div class="sec-head" style="margin-top:24px">
+        <p class="sec-label">标签</p>
+        <span>
+          <button class="mini" onclick="autoLabel()" title="让 AI 自动分类">自动分类</button>
+          <button class="mini" onclick="addLabel()">新建</button>
+        </span>
+      </div>
+      <div id="labelList" class="tags"></div>
     </section>
 
     <!-- 生成 -->
@@ -192,6 +201,17 @@
     <div class="dialog-actions" style="margin-top:8px">
       <button class="no" onclick="closeSettings()">取消</button>
       <button class="ok" onclick="saveSettings()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用信息弹层 -->
+<div class="mask" id="infoMask" onclick="if(event.target===this)closeInfo()">
+  <div class="dialog wide">
+    <h3 id="infoTitle"></h3>
+    <div id="infoBody" class="info-body"></div>
+    <div class="dialog-actions">
+      <button class="ok" onclick="closeInfo()">关闭</button>
     </div>
   </div>
 </div>

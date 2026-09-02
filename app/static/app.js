@@ -127,7 +127,13 @@ function renderNotebooks() {
         <div class="nb-body">
           <div class="nb-title">${esc(n.title)}</div>
           <div class="nb-meta">${n.sources} 个资料 · ${esc(n.created)}</div>
-        </div></div>`).join("")
+        </div>
+        <span class="nb-ops">
+          <button class="x" title="重命名"
+            onclick="event.stopPropagation();renameNotebook('${n.id}')">✎</button>
+          <button class="x" title="删除笔记本"
+            onclick="event.stopPropagation();delNotebook('${n.id}')">✕</button>
+        </span></div>`).join("")
     : '<div class="empty">没有匹配的笔记本</div>';
   scNb?.sync();
 }
@@ -154,17 +160,22 @@ async function pick(id) {
   RTASK = null;
   loadSources();
   loadNotes();
+  loadLabels();
   loadHistory();      // ← 先补历史，再给建议
 }
 
 /** 载入过去的问答，让上下文可见 */
 async function loadHistory() {
   const mine = CUR?.id;
-  let turns = [];
+  let turns = [], err = "";
   try {
-    turns = await api(`/api/history/${mine}`);
-  } catch { turns = []; }
+    const r = await api(`/api/history/${mine}`);
+    turns = r.turns || [];
+    err = r.error || "";
+  } catch (e) { err = e.message; }
   if (CUR?.id !== mine) return;   // 期间切换了笔记本
+
+  if (err) toast(err, true);
 
   if (!turns.length) {
     $("chat").innerHTML = `<div class="welcome">
@@ -178,7 +189,9 @@ async function loadHistory() {
   }
 
   $("chat").innerHTML =
-    `<div class="hist-tip">以下是过去的对话</div>` +
+    `<div class="hist-tip">以下是过去的对话
+       <button class="mini danger" onclick="clearHistory()">清空</button>
+     </div>` +
     turns.map((t) => renderTurn(t.q, t.a)).join("");
   // 历史不做入场动画，直接落到底部
   $("chat").querySelectorAll(".msg").forEach((m) => (m.style.animation = "none"));
@@ -188,6 +201,17 @@ async function loadHistory() {
     scChat?.sync();
   });
   loadSuggest();
+}
+
+async function clearHistory() {
+  if (!CUR) return;
+  if (!confirm("清空这个笔记本的全部对话记录？不可恢复。")) return;
+  try {
+    await api(`/api/history/${CUR.id}`, { method: "DELETE" });
+    CONV = null;
+    toast("已清空对话");
+    loadHistory();
+  } catch (e) { toast(e.message, true); }
 }
 
 function renderTurn(q, a) {
@@ -364,6 +388,48 @@ async function createNotebook() {
   } catch (e) { toast(e.message, true); }
 }
 
+async function renameNotebook(id) {
+  const nb = NBS.find((n) => n.id === id);
+  const t = await dialog("重命名笔记本", `当前名称：${nb?.title || ""}`, "新名称");
+  if (!t) return;
+  try {
+    await api("/api/notebooks/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: id, title: t }),
+    });
+    toast("已重命名");
+    await loadNotebooks();
+    if (CUR?.id === id) { CUR.title = t; $("nbTitle").textContent = t; }
+  } catch (e) { toast(e.message, true); }
+}
+
+async function delNotebook(id) {
+  const nb = NBS.find((n) => n.id === id);
+  if (!confirm(`删除笔记本「${nb?.title || ""}」？\n里面的资料和笔记会一并删除，不可恢复。`)) return;
+  try {
+    await api(`/api/notebooks/${id}`, { method: "DELETE" });
+    toast("已删除");
+    if (CUR?.id === id) { CUR = null; resetMain(); }
+    loadNotebooks();
+  } catch (e) { toast(e.message, true); }
+}
+
+function resetMain() {
+  $("nbTitle").textContent = "选择一个笔记本";
+  $("nbSub").textContent = "";
+  $("chat").innerHTML = `<div class="welcome">
+      <svg class="mark"><use href="#spike"/></svg>
+      <h2>NotebookLM 桌面版</h2>
+      <p>从左侧选一个笔记本开始。</p>
+    </div>`;
+  $("input").disabled = true;
+  $("sendBtn").disabled = true;
+  $("suggest").innerHTML = "";
+  $("srcList").innerHTML = "";
+  $("noteList").innerHTML = "";
+}
+
 // ---------------------------------------------------------------- 资料
 
 async function loadSources() {
@@ -378,7 +444,12 @@ async function loadSources() {
             <div class="item-sub">${x.status === "processing" ? "处理中…"
               : x.status === "error" ? "处理失败" : x.words ? x.words + " 词" : "就绪"}</div>
           </div>
-          <button class="x" onclick="delSource('${x.id}')" title="删除">✕</button>
+          <span class="nb-ops">
+            <button class="x" onclick="srcGuide('${x.id}')" title="AI 摘要">☰</button>
+            <button class="x" onclick="srcRefresh('${x.id}')" title="重新抓取">↻</button>
+            <button class="x" onclick="srcRename('${x.id}')" title="重命名">✎</button>
+            <button class="x" onclick="delSource('${x.id}')" title="删除">✕</button>
+          </span>
         </div>`).join("")
       : '<div class="empty">还没有资料</div>';
     scPages.sources?.sync();
@@ -435,6 +506,46 @@ async function addTextPrompt() {
   } catch (e) { toast(e.message, true); }
 }
 
+async function srcRename(id) {
+  const t = await dialog("重命名资料", "", "新标题");
+  if (!t) return;
+  try {
+    await api("/api/sources/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: CUR.id, target_id: id, name: t }),
+    });
+    loadSources();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function srcRefresh(id) {
+  toast("正在重新抓取…");
+  try {
+    await api(`/api/sources/refresh/${CUR.id}/${id}`, { method: "POST" });
+    toast("已触发更新");
+    loadSources();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function srcGuide(id) {
+  toast("正在读取摘要…");
+  try {
+    const g = await api(`/api/source-guide/${CUR.id}/${id}`);
+    if (g.error) return toast(g.error, true);
+    let html = `<div class="text">${fmt(g.summary || "（没有摘要）")}`;
+    if (g.questions?.length) {
+      html += `<p class="sec-label" style="margin-top:16px">这份资料能回答</p>` +
+        g.questions.map((q) =>
+          `<button class="sg" style="width:100%;margin-bottom:6px"
+             data-p="${esc(q)}" onclick="useSuggest(this);closeInfo()">
+             <div class="sg-t">${esc(q)}</div></button>`).join("");
+    }
+    html += `</div>`;
+    showInfo("资料摘要", html);
+  } catch (e) { toast(e.message, true); }
+}
+
 async function delSource(id) {
   if (!confirm("删除这个资料？")) return;
   try {
@@ -449,18 +560,30 @@ async function loadNotes() {
   if (!CUR) return;
   try {
     const n = await api(`/api/notes/${CUR.id}`);
+    NOTES_CACHE = n;
     $("noteList").innerHTML = n.length
       ? n.map((x) => `<div class="item"><div class="item-body">
             <div class="item-title">${esc(x.title)}</div>
             <div class="item-sub">${esc(oneline(x.content).slice(0, 70))}</div>
           </div>
-          <button class="x" onclick="delNote('${x.id}')" title="删除">✕</button>
+          <span class="nb-ops">
+            <button class="x" onclick="viewNote('${x.id}')" title="查看">☰</button>
+            <button class="x" onclick="delNote('${x.id}')" title="删除">✕</button>
+          </span>
         </div>`).join("")
       : '<div class="empty">还没有笔记<br>在回答下方点「存为笔记」</div>';
     scPages.notes?.sync();
   } catch (e) {
     $("noteList").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
+}
+
+let NOTES_CACHE = [];
+
+function viewNote(id) {
+  const n = NOTES_CACHE.find((x) => x.id === id);
+  if (!n) return;
+  showInfo(n.title, `<div class="text">${fmt(n.content)}</div>`);
 }
 
 async function delNote(id) {
@@ -608,6 +731,81 @@ async function openFolder() {
   } catch (e) { toast(e.message, true); }
 }
 
+// ---------------------------------------------------------------- 信息弹层
+
+function showInfo(title, html) {
+  $("infoTitle").textContent = title;
+  $("infoBody").innerHTML = html;
+  $("infoMask").classList.add("show");
+}
+function closeInfo() { $("infoMask").classList.remove("show"); }
+
+// ---------------------------------------------------------------- 标签
+
+async function loadLabels() {
+  if (!CUR) return;
+  try {
+    const ls = await api(`/api/labels/${CUR.id}`);
+    $("labelList").innerHTML = ls.length
+      ? ls.map((l) => `<span class="tag">
+           ${esc(l.emoji || "")} ${esc(l.name)}
+           <button onclick="delLabel('${l.id}')" title="删除标签">✕</button>
+         </span>`).join("")
+      : '<div class="empty" style="padding:12px">还没有标签</div>';
+  } catch { $("labelList").innerHTML = ""; }
+}
+
+async function addLabel() {
+  if (!CUR) return toast("请先选择笔记本", true);
+  const n = await dialog("新建标签", "给资料分类用", "例如：重点章节");
+  if (!n) return;
+  try {
+    await api("/api/labels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: CUR.id, name: n }),
+    });
+    loadLabels();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function autoLabel() {
+  if (!CUR) return toast("请先选择笔记本", true);
+  toast("AI 正在分类…");
+  try {
+    const r = await api("/api/labels/auto", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: CUR.id }),
+    });
+    toast(`已生成 ${r.count} 个标签`);
+    loadLabels();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function delLabel(id) {
+  try {
+    await api(`/api/labels/${CUR.id}/${id}`, { method: "DELETE" });
+    loadLabels();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ---------------------------------------------------------------- 笔记编辑
+
+async function editNote(id, title, content) {
+  const c = await dialog("编辑笔记", title, "内容", true);
+  if (c === null) return;
+  try {
+    await api("/api/notes/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notebook_id: CUR.id, note_id: id, title, content: c }),
+    });
+    toast("已保存");
+    loadNotes();
+  } catch (e) { toast(e.message, true); }
+}
+
 // ---------------------------------------------------------------- 对话设置
 
 async function openSettings() {
@@ -685,6 +883,10 @@ Object.assign(window, {
   setMode, startResearch, importResearch, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
+  renameNotebook, delNotebook, clearHistory,
+  srcRename, srcRefresh, srcGuide,
+  addLabel, autoLabel, delLabel,
+  viewNote, editNote, showInfo, closeInfo,
 });
 
 boot();
