@@ -68,6 +68,16 @@ def _fmt_date(dt: Any, *, with_time: bool = False) -> str:
         return t[:16] if with_time else t[:10]
 
 
+def _evict(store: dict[str, Any], keep: int) -> None:
+    """把内存字典裁到 keep 条，丢最早的。
+
+    这三个字典原本只增不减：研究结果里存着完整报告正文，
+    长时间开着窗口反复用会一直吃内存。
+    """
+    while len(store) > keep:
+        store.pop(next(iter(store)), None)
+
+
 async def get_client() -> NotebookLMClient:
     global _client
     async with _lock:
@@ -400,6 +410,7 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
     if start is None or not getattr(start, "task_id", ""):
         raise HTTPException(502, "研究没能启动，请稍后重试")
     tid = start.task_id
+    _evict(_RESEARCH, 20)
     _RESEARCH[tid] = {
         "state": "running", "query": body.query,
         "notebook_id": body.notebook_id, "sources": [],
@@ -539,6 +550,7 @@ async def api_ask(body: AskBody) -> dict[str, Any]:
     )
     if r is None:
         raise HTTPException(502, "没有收到回答，请重试")
+    _evict(_LAST_ASK, 30)
     _LAST_ASK[body.notebook_id] = r
     return {
         "answer": r.answer,
@@ -874,6 +886,7 @@ async def api_generate(body: GenerateBody) -> dict[str, Any]:
         raise HTTPException(400, f"未知类型: {k}")
 
     tid = st.task_id
+    _evict(_TASKS, 60)
     _TASKS[tid] = {"kind": k, "state": "running"}
 
     async def _run() -> None:

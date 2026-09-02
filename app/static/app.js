@@ -53,7 +53,7 @@ const oneline = (s) => String(s ?? "").replace(/\s*\n\s*/g, " ").trim();
 // ---------------------------------------------------------------- 弹层
 
 let dlgResolve = null;
-function dialog(title, desc, placeholder, multiline) {
+function dialog(title, desc, placeholder, multiline, initial) {
   // 上一个弹层还挂着就先结算掉，否则那个 await 永远不返回，
   // 调用方会卡死在半途（例如"重命名"点两次）。
   if (dlgResolve) { dlgResolve(null); dlgResolve = null; }
@@ -63,7 +63,7 @@ function dialog(title, desc, placeholder, multiline) {
   single.style.display = multiline ? "none" : "";
   multi.style.display = multiline ? "" : "none";
   const field = multiline ? multi : single;
-  field.value = "";
+  field.value = initial || "";
   field.placeholder = placeholder || "";
   $("mask").classList.add("show");
   setTimeout(() => field.focus(), 60);
@@ -613,11 +613,12 @@ async function loadNotes() {
     NOTES_CACHE = n;
     $("noteList").innerHTML = n.length
       ? n.map((x) => `<div class="item"><div class="item-body">
-            <div class="item-title">${esc(x.title)}</div>
-            <div class="item-sub">${esc(oneline(x.content).slice(0, 70))}</div>
+            <div class="item-title">${esc(x.title || "(无标题)")}</div>
+            <div class="item-sub">${esc(oneline(x.content).slice(0, 70)) || "（空笔记）"}</div>
           </div>
           <span class="nb-ops">
             <button class="x" data-act="viewNote" data-a0="${esc(x.id)}" title="查看">☰</button>
+            <button class="x" data-act="editNote" data-a0="${esc(x.id)}" title="编辑">✎</button>
             <button class="x" data-act="delNote" data-a0="${esc(x.id)}" title="删除">✕</button>
           </span>
         </div>`).join("")
@@ -1090,14 +1091,20 @@ async function delLabel(id) {
 
 // ---------------------------------------------------------------- 笔记编辑
 
-async function editNote(id, title, content) {
-  const c = await dialog("编辑笔记", title, "内容", true);
+async function editNote(id) {
+  const n = NOTES_CACHE.find((x) => x.id === id);
+  if (!n) return toast("找不到这条笔记", true);
+  const c = await dialog("编辑笔记", n.title || "(无标题)",
+                         "内容（Ctrl+Enter 保存）", true, n.content || "");
   if (c === null) return;
   try {
     await api("/api/notes/update", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notebook_id: CUR.id, note_id: id, title, content: c }),
+      body: JSON.stringify({
+        notebook_id: CUR.id, note_id: id,
+        title: n.title || "(无标题)", content: c,
+      }),
     });
     toast("已保存");
     loadNotes();
