@@ -271,7 +271,7 @@ async def api_notebooks() -> list[dict[str, Any]]:
             "sources": getattr(b, "sources_count", 0),
             "created": _fmt_date(getattr(b, "created_at", None)),
         }
-        for b in await client.notebooks.list()
+        for b in (await client.notebooks.list() or [])
     ]
 
 
@@ -279,6 +279,8 @@ async def api_notebooks() -> list[dict[str, Any]]:
 async def api_create(body: CreateBody) -> dict[str, Any]:
     client = await get_client()
     nb = await client.notebooks.create(body.title)
+    if nb is None:
+        raise HTTPException(502, "创建失败，Google 没有返回笔记本信息")
     return {"id": nb.id, "title": nb.title}
 
 
@@ -308,7 +310,7 @@ async def api_summary(notebook_id: str) -> dict[str, Any]:
 async def api_sources(notebook_id: str) -> list[dict[str, Any]]:
     client = await get_client()
     out = []
-    for s in await client.sources.list(notebook_id):
+    for s in (await client.sources.list(notebook_id) or []):
         # is_processing 只覆盖 PROCESSING，PREPARING(5) 会漏成 ready，
         # 界面上看着能用其实还没就绪。这里按 is_ready 反推更保险。
         if getattr(s, "is_error", False):
@@ -333,13 +335,19 @@ async def api_sources(notebook_id: str) -> list[dict[str, Any]]:
 async def api_add_url(body: AddUrlBody) -> dict[str, Any]:
     client = await get_client()
     s = await client.sources.add_url(body.notebook_id, body.url)
+    if s is None:
+        raise HTTPException(502, "添加失败，请确认网址可公开访问")
     return {"id": s.id, "title": s.title or body.url}
 
 
 @app.post("/api/sources/text")
 async def api_add_text(body: AddTextBody) -> dict[str, Any]:
     client = await get_client()
-    s = await client.sources.add_text(body.notebook_id, body.content, title=body.title)
+    # 签名是 add_text(notebook_id, title, content)，
+    # 之前把 content 放在第二个位置又传了 title=，直接 TypeError。
+    s = await client.sources.add_text(body.notebook_id, body.title, body.content)
+    if s is None:
+        raise HTTPException(502, "添加失败")
     return {"id": s.id, "title": s.title or body.title}
 
 
@@ -389,6 +397,8 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
     start = await client.research.start(
         body.notebook_id, body.query, source=body.source, mode=body.mode
     )
+    if start is None or not getattr(start, "task_id", ""):
+        raise HTTPException(502, "研究没能启动，请稍后重试")
     tid = start.task_id
     _RESEARCH[tid] = {
         "state": "running", "query": body.query,
@@ -527,6 +537,8 @@ async def api_ask(body: AskBody) -> dict[str, Any]:
         source_ids=body.source_ids or None,
         conversation_id=body.conversation_id,
     )
+    if r is None:
+        raise HTTPException(502, "没有收到回答，请重试")
     _LAST_ASK[body.notebook_id] = r
     return {
         "answer": r.answer,
@@ -601,7 +613,7 @@ async def api_suggest(notebook_id: str) -> list[dict[str, str]]:
     """
     client = await get_client()
     try:
-        items = await client.notebooks.suggest_prompts(notebook_id)
+        items = await client.notebooks.suggest_prompts(notebook_id) or []
     except Exception:
         return list(_FALLBACK_PROMPTS)
     out = []
@@ -711,7 +723,7 @@ async def api_notes(notebook_id: str) -> list[dict[str, Any]]:
             "title": n.title or "(无标题)",
             "content": (getattr(n, "content", "") or "")[:4000],
         }
-        for n in await client.notes.list(notebook_id)
+        for n in (await client.notes.list(notebook_id) or [])
     ]
 
 
@@ -719,6 +731,8 @@ async def api_notes(notebook_id: str) -> list[dict[str, Any]]:
 async def api_note_create(body: NoteBody) -> dict[str, Any]:
     client = await get_client()
     n = await client.notes.create(body.notebook_id, title=body.title, content=body.content)
+    if n is None:
+        raise HTTPException(502, "笔记创建失败")
     return {"id": n.id}
 
 
@@ -878,7 +892,7 @@ async def api_report_suggest(notebook_id: str) -> list[dict[str, Any]]:
     """AI 推荐做哪些报告，对应网页版 Reports 里的建议。"""
     client = await get_client()
     try:
-        items = await client.artifacts.suggest_reports(notebook_id)
+        items = await client.artifacts.suggest_reports(notebook_id) or []
     except Exception:
         return []
     out = []
@@ -961,7 +975,7 @@ async def api_download_artifact(notebook_id: str, artifact_id: str):
     client = await get_client()
     art = None
     try:
-        items = await client.artifacts.list(notebook_id)
+        items = await client.artifacts.list(notebook_id) or []
         for x in items:
             if (getattr(x, "id", "") or getattr(x, "artifact_id", "")) == artifact_id:
                 art = x
@@ -994,7 +1008,7 @@ async def api_artifacts(notebook_id: str) -> list[dict[str, Any]]:
     """已生成的所有产物，对应网页版 Studio 里的列表。"""
     client = await get_client()
     try:
-        items = await client.artifacts.list(notebook_id)
+        items = await client.artifacts.list(notebook_id) or []
     except Exception:
         return []
     out = []
@@ -1155,7 +1169,7 @@ async def api_labels(notebook_id: str) -> list[dict[str, Any]]:
     """资料标签，对应网页版 Sources 里的分类。"""
     client = await get_client()
     try:
-        items = await client.labels.list(notebook_id)
+        items = await client.labels.list(notebook_id) or []
     except Exception:
         return []
     return [
@@ -1194,7 +1208,7 @@ async def api_label_del(notebook_id: str, label_id: str) -> dict[str, Any]:
 async def api_label_sources(notebook_id: str, label_id: str) -> list[dict[str, Any]]:
     client = await get_client()
     try:
-        items = await client.labels.sources(notebook_id, label_id)
+        items = await client.labels.sources(notebook_id, label_id) or []
     except Exception:
         return []
     return [{"id": getattr(x, "id", ""), "title": getattr(x, "title", "")} for x in items]
@@ -1207,7 +1221,7 @@ async def api_collections() -> list[dict[str, Any]]:
     """笔记本合集，对应网页版首页的分组。"""
     client = await get_client()
     try:
-        items = await client.collections.list()
+        items = await client.collections.list() or []
     except Exception:
         return []
     return [
@@ -1388,7 +1402,7 @@ async def api_set_language(body: dict[str, Any]) -> dict[str, Any]:
 async def api_mindmaps(notebook_id: str) -> list[dict[str, Any]]:
     client = await get_client()
     try:
-        items = await client.mind_maps.list(notebook_id)
+        items = await client.mind_maps.list(notebook_id) or []
     except Exception:
         return []
     return [
@@ -1451,7 +1465,7 @@ async def api_label_rename(body: LabelBody) -> dict[str, Any]:
 async def api_collection_notebooks(collection_id: str) -> list[dict[str, Any]]:
     client = await get_client()
     try:
-        items = await client.collections.notebooks(collection_id)
+        items = await client.collections.notebooks(collection_id) or []
     except Exception:
         return []
     return [

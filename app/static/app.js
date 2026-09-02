@@ -54,6 +54,9 @@ const oneline = (s) => String(s ?? "").replace(/\s*\n\s*/g, " ").trim();
 
 let dlgResolve = null;
 function dialog(title, desc, placeholder, multiline) {
+  // 上一个弹层还挂着就先结算掉，否则那个 await 永远不返回，
+  // 调用方会卡死在半途（例如"重命名"点两次）。
+  if (dlgResolve) { dlgResolve(null); dlgResolve = null; }
   $("dlgTitle").textContent = title;
   $("dlgDesc").textContent = desc || "";
   const single = $("dlgInput"), multi = $("dlgArea");
@@ -133,7 +136,7 @@ function renderNotebooks() {
     ? list.map((n) => `<div class="nb ${CUR?.id === n.id ? "on" : ""}" data-act="pick" data-a0="${esc(n.id)}">
         <span class="nb-emo">${esc(n.emoji)}</span>
         <div class="nb-body">
-          <div class="nb-title">${esc(n.title)}</div>
+          <div class="nb-title">${esc(n.title || "(未命名笔记本)")}</div>
           <div class="nb-meta">${n.sources} 个资料 · ${esc(n.created)}</div>
         </div>
         <span class="nb-ops">
@@ -152,11 +155,11 @@ async function pick(id) {
   CUR = NBS.find((n) => n.id === id);
   CONV = null;
   renderNotebooks();
-  $("nbTitle").textContent = CUR.title;
+  $("nbTitle").textContent = CUR.title || "(未命名笔记本)";
   $("nbSub").textContent = `${CUR.sources} 个资料`;
   $("chat").innerHTML = `<div class="welcome">
       <svg class="mark"><use href="#spike"/></svg>
-      <h2>${esc(CUR.title)}</h2>
+      <h2>${esc(CUR.title || "(未命名笔记本)")}</h2>
       <p>正在载入历史对话…</p>
     </div>`;
   scChat?.sync();
@@ -188,7 +191,7 @@ async function loadHistory() {
   if (!turns.length) {
     $("chat").innerHTML = `<div class="welcome">
         <svg class="mark"><use href="#spike"/></svg>
-        <h2>${esc(CUR.title)}</h2>
+        <h2>${esc(CUR.title || "(未命名笔记本)")}</h2>
         <p>问点什么，回答会基于这个笔记本里的资料。</p>
       </div>`;
     scChat?.sync();
@@ -257,8 +260,13 @@ async function loadSuggest() {
 }
 
 function renderSuggest(items) {
-  if (!items?.length) { $("suggest").innerHTML = ""; return; }
-  $("suggest").innerHTML = items.map((x) => {
+  // 过滤掉空条目，否则会出现点不出内容的空白卡片
+  const list = (items || []).filter((x) => {
+    const t = typeof x === "string" ? x : (x?.title || x?.prompt || "");
+    return String(t).trim();
+  });
+  if (!list.length) { $("suggest").innerHTML = ""; return; }
+  $("suggest").innerHTML = list.map((x) => {
     const title = typeof x === "string" ? x : (x.title || "");
     const prompt = typeof x === "string" ? x : (x.prompt || "");
     // 副标题只在中文时展示，英文原文仅作 tooltip，避免界面中英夹杂
@@ -466,7 +474,8 @@ async function loadSources() {
           <div class="item-body">
             <div class="item-title" title="${esc(x.title)}">${esc(x.title)}</div>
             <div class="item-sub">${x.status === "processing" ? "处理中…"
-              : x.status === "error" ? "处理失败" : x.words ? x.words + " 词" : "就绪"}</div>
+              : x.status === "error" ? "处理失败"
+              : x.words ? esc(x.words) + " 词" : "就绪"}</div>
           </div>
           <span class="nb-ops">
             <button class="x" data-act="srcGuide" data-a0="${esc(x.id)}" title="AI 摘要">☰</button>
@@ -1185,8 +1194,9 @@ async function loadArtifacts() {
       const dur = x.duration ? ` · ${Math.round(x.duration / 60)} 分钟` : "";
       return `<div class="item">
         <div class="item-body">
-          <div class="item-title">${esc(x.title || TYPE_CN[x.type] || x.type)} ${st}</div>
-          <div class="item-sub">${TYPE_CN[x.type] || x.type}${dur} · ${esc(x.created)}</div>
+          <div class="item-title">${esc(x.title || TYPE_CN[x.type] || "未命名")} ${st}</div>
+          <div class="item-sub">${esc(TYPE_CN[x.type] || "其他")}${dur}${
+            x.created ? " · " + esc(x.created) : ""}</div>
         </div>
         ${x.done && DOWNLOADABLE.has(x.type)
           ? `<a class="dl-btn" href="/api/download-artifact/${encodeURIComponent(mine)}/${encodeURIComponent(x.id)}"
