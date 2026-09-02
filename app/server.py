@@ -9,6 +9,7 @@ NotebookLM 桌面版 —— 本地聊天界面后端
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import webbrowser
@@ -400,6 +401,60 @@ async def api_source_text(notebook_id: str, source_id: str) -> dict[str, Any]:
 
 _RESEARCH: dict[str, dict[str, Any]] = {}
 
+#: 研究状态落盘的位置。研究动辄十几分钟，
+#: 只放内存的话关掉程序就全没了，等于白等。
+_RESEARCH_FILE = OUT / "research_state.json"
+
+
+def _research_save() -> None:
+    """把研究结果写盘（objs 是 SDK 对象，转成可序列化的 dict）。"""
+    try:
+        OUT.mkdir(parents=True, exist_ok=True)
+        data = {}
+        for tid, d in _RESEARCH.items():
+            item = {k: v for k, v in d.items() if k != "objs"}
+            item["_objs"] = [
+                {
+                    "url": getattr(x, "url", "") or "",
+                    "title": getattr(x, "title", "") or "",
+                    "hint": getattr(x, "hint", "") or "",
+                    "research_task_id": getattr(x, "research_task_id", None),
+                    "report_markdown": getattr(x, "report_markdown", "") or "",
+                    "source_ordinal": getattr(x, "source_ordinal", None),
+                    "result_type": int(getattr(x, "result_type", 1) or 1),
+                }
+                for x in d.get("objs", [])
+            ]
+            data[tid] = item
+        _RESEARCH_FILE.write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass      # 落盘失败不能影响主流程
+
+
+def _research_load() -> None:
+    """启动时把上次的研究结果读回来。"""
+    try:
+        if not _RESEARCH_FILE.exists():
+            return
+        from notebooklm import ResearchSource
+
+        data = json.loads(_RESEARCH_FILE.read_text(encoding="utf-8"))
+        for tid, item in data.items():
+            objs = [ResearchSource.from_public_dict(o) for o in item.pop("_objs", [])]
+            # 上次没跑完就被关掉的，标成中断，别让界面一直转圈
+            if item.get("state") == "running":
+                item["state"] = "error"
+                item["error"] = "上次的研究被程序关闭打断了，请重新发起"
+            item["objs"] = objs
+            _RESEARCH[tid] = item
+    except Exception:
+        pass
+
+
+_research_load()
+
 
 @app.post("/api/research")
 async def api_research(body: ResearchBody) -> dict[str, Any]:
@@ -468,9 +523,28 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             _RESEARCH[tid]["state"] = "error"
             _RESEARCH[tid]["error"] = f"{type(e).__name__}: {e}"
+        _research_save()
 
+    _research_save()
     asyncio.create_task(_run())
     return {"task_id": tid}
+
+
+@app.get("/api/research-latest/{notebook_id}")
+async def api_research_latest(notebook_id: str) -> dict[str, Any]:
+    """这个笔记本最近一次研究。
+
+    刷新页面后前端会丢掉 task_id，靠这个接口把进行中或
+    刚完成的研究找回来，不用重跑一遍。
+    """
+    for tid in reversed(list(_RESEARCH)):
+        d = _RESEARCH[tid]
+        if d.get("notebook_id") != notebook_id:
+            continue
+        out = {k: v for k, v in d.items() if k != "objs"}
+        out["task_id"] = tid
+        return out
+    return {"state": "none"}
 
 
 @app.get("/api/research/{task_id}")

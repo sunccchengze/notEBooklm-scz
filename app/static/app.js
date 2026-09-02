@@ -173,6 +173,7 @@ async function pick(id) {
   loadNotes();
   loadLabels();
   loadHistory();      // ← 先补历史，再给建议
+  restoreResearch();  // 刷新页面后把进行中的研究接回来
 }
 
 /** 载入过去的问答，让上下文可见 */
@@ -653,6 +654,33 @@ function setMode(m) {
   $("mode-deep").classList.toggle("on", m === "deep");
 }
 
+/* 刷新页面后前端会丢掉 task_id，但研究还在服务器上跑。
+   这里按笔记本把它找回来，接着轮询或直接显示结果。 */
+async function restoreResearch() {
+  const mine = CUR?.id;
+  if (!mine) return;
+  let r;
+  try {
+    const resp = await fetch(`/api/research-latest/${encodeURIComponent(mine)}`);
+    r = await resp.json();
+  } catch { return; }
+  if (CUR?.id !== mine || !r || r.state === "none" || !r.task_id) return;
+
+  RTASK = r.task_id;
+  if (r.state === "running") {
+    $("rResult").innerHTML =
+      `<div class="task"><div class="spin"></div>
+         <div class="task-name">正在联网研究…（刷新前已开始，结果不会丢）</div></div>`;
+    pollResearch(r.task_id, mine);
+  } else if (r.state === "done" && r.sources?.length) {
+    renderResearchResult(r.sources);
+  } else if (r.state === "error") {
+    $("rResult").innerHTML =
+      `<div class="empty">${esc(r.error || "研究失败")}
+         <br><br><button class="mini" data-act="startResearch">重新研究</button></div>`;
+  }
+}
+
 async function startResearch() {
   const q = $("rqInput").value.trim();
   if (!CUR) return toast("请先选择笔记本", true);
@@ -695,22 +723,7 @@ async function pollResearch(tid, nbId) {
         $("rResult").innerHTML = '<div class="empty">没有找到结果</div>';
         return;
       }
-      $("rResult").innerHTML =
-        `<div class="sec-head" style="margin-top:16px">
-           <p class="sec-label">找到 ${list.length} 个来源</p>
-           <button class="mini" data-act="toggleAllResearch">全选 / 全不选</button>
-         </div>` +
-        list.map((x) => `<label class="rsrc">
-            <input type="checkbox" checked value="${esc(x.url)}">
-            <div style="min-width:0">
-              <div class="rsrc-t">${esc(x.title || "无标题")}
-                ${x.is_report ? '<span class="badge run">研究报告</span>' : ""}</div>
-              <div class="rsrc-u">${esc(x.url || "（报告正文，无链接）")}</div>
-            </div></label>`).join("") +
-        `<div class="add-row" style="margin-top:12px">
-           <button style="flex:1" data-act="importResearch">导入选中的来源</button>
-         </div>`;
-      scPages.research?.sync();
+      renderResearchResult(list);
       return;
     }
     if (s.state === "error") {
@@ -728,6 +741,25 @@ async function pollResearch(tid, nbId) {
   // 30 分钟还没完，给个交代，别一直转圈
   $("rResult").innerHTML =
     '<div class="empty">等待超时。深度研究有时要更久，稍后回到这个页面再看看</div>';
+}
+
+function renderResearchResult(list) {
+  $("rResult").innerHTML =
+    `<div class="sec-head" style="margin-top:16px">
+       <p class="sec-label">找到 ${list.length} 个来源</p>
+       <button class="mini" data-act="toggleAllResearch">全选 / 全不选</button>
+     </div>` +
+    list.map((x) => `<label class="rsrc">
+        <input type="checkbox" checked value="${esc(x.url)}">
+        <div style="min-width:0">
+          <div class="rsrc-t">${esc(x.title || "无标题")}
+            ${x.is_report ? '<span class="badge run">研究报告</span>' : ""}</div>
+          <div class="rsrc-u">${esc(x.url || "（报告正文，无链接）")}</div>
+        </div></label>`).join("") +
+    `<div class="add-row" style="margin-top:12px">
+       <button style="flex:1" data-act="importResearch">导入选中的来源</button>
+     </div>`;
+  scPages.research?.sync();
 }
 
 function toggleAllResearch() {
@@ -1277,6 +1309,12 @@ async function exportArtifact(id, title) {
 /* 下载失败时给提示。
    <a download> 直连接口，出错会收到 JSON 而不是文件，
    浏览器不会报错，用户只会觉得"点了没反应"。 */
+// 研究还在跑时关页面，提醒一下（研究本身不会断，只是提示）
+window.addEventListener("beforeunload", (e) => {
+  const running = $("rResult")?.querySelector(".spin");
+  if (running) { e.preventDefault(); e.returnValue = ""; }
+});
+
 document.addEventListener("click", async (e) => {
   const a = e.target.closest("a.dl-btn");
   if (!a) return;
@@ -1411,7 +1449,7 @@ Object.assign(ACTIONS, {
 
   pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
-  setMode, startResearch, importResearch, toggleAllResearch, gen, openFolder,
+  setMode, startResearch, importResearch, toggleAllResearch, restoreResearch, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
   renameNotebook, delNotebook, clearHistory,
