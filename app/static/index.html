@@ -5,51 +5,55 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NotebookLM 桌面版</title>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📓</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23cc785c'/></svg>">
 </head>
 <body>
 
+<!-- Anthropic 四芒星标记（DESIGN.md 品牌字形） -->
+<svg style="display:none">
+  <symbol id="spike" viewBox="0 0 24 24">
+    <path d="M12 1.5 13.9 9.3 20.4 4.8 15.9 11.3 23.7 13.2 15.9 12.7 20.4 19.2 13.9 14.7 12 22.5 10.1 14.7 3.6 19.2 8.1 12.7 0.3 13.2 8.1 11.3 3.6 4.8 10.1 9.3Z"/>
+  </symbol>
+</svg>
+
 <div id="app">
 
-  <!-- ============ 左侧：笔记本列表 ============ -->
+  <!-- ==================== 左栏 ==================== -->
   <aside class="sidebar">
     <div class="brand">
-      <span class="logo">📓</span>
+      <svg class="spike"><use href="#spike"/></svg>
       <div>
-        <div class="brand-name">NotebookLM</div>
+        <div class="brand-name">Notebook</div>
         <div class="brand-sub" id="account">连接中…</div>
       </div>
     </div>
 
-    <button class="btn-new" onclick="createNotebook()">
-      <span>＋</span> 新建笔记本
-    </button>
+    <button class="btn-new" onclick="createNotebook()">＋ 新建笔记本</button>
 
-    <input class="search" id="search" placeholder="搜索笔记本…" oninput="renderNotebooks()">
+    <input class="search" id="search" placeholder="搜索笔记本" oninput="renderNotebooks()">
 
-    <div class="nb-list" id="nbList">
-      <div class="empty">加载中…</div>
-    </div>
+    <div class="nb-list" id="nbList"><div class="empty">加载中…</div></div>
   </aside>
 
-  <!-- ============ 中间：聊天 ============ -->
+  <!-- ==================== 中栏 ==================== -->
   <main class="main">
     <header class="topbar">
       <div class="title-wrap">
-        <h1 id="nbTitle">选择一个笔记本开始</h1>
+        <h1 id="nbTitle">选择一个笔记本</h1>
         <div class="sub" id="nbSub"></div>
       </div>
       <div class="top-actions">
-        <button class="ghost" onclick="togglePanel()" id="panelBtn">资料 &amp; 生成 ▸</button>
+        <button class="btn-secondary" onclick="openFolder()" title="打开下载文件夹">下载目录</button>
+        <button class="btn-secondary" onclick="togglePanel()" id="panelBtn">资料与生成</button>
       </div>
     </header>
 
     <div class="chat" id="chat">
       <div class="welcome">
-        <div class="welcome-icon">💬</div>
+        <svg class="mark"><use href="#spike"/></svg>
         <h2>和你的资料对话</h2>
         <p>从左侧选一个笔记本，或新建一个并添加资料。<br>
-           回答都基于你自己的资料，并附带引用。</p>
+           每个回答都基于你自己的来源，并附带引用。</p>
       </div>
     </div>
 
@@ -63,54 +67,101 @@
     </div>
   </main>
 
-  <!-- ============ 右侧：资料与生成 ============ -->
+  <!-- ==================== 右栏 ==================== -->
   <aside class="panel" id="panel">
     <div class="tabs">
-      <button class="tab active" onclick="switchTab('sources')" id="tab-sources">资料</button>
-      <button class="tab" onclick="switchTab('studio')" id="tab-studio">生成</button>
-      <button class="tab" onclick="switchTab('notes')" id="tab-notes">笔记</button>
+      <button class="tab active" id="tab-sources" onclick="switchTab('sources')">资料</button>
+      <button class="tab" id="tab-studio"  onclick="switchTab('studio')">生成</button>
+      <button class="tab" id="tab-research" onclick="switchTab('research')">研究</button>
+      <button class="tab" id="tab-notes"   onclick="switchTab('notes')">笔记</button>
     </div>
 
     <!-- 资料 -->
     <section class="tabpage active" id="page-sources">
-      <div class="add-box">
-        <div class="add-row">
-          <input id="urlInput" placeholder="粘贴网址 / YouTube 链接">
-          <button onclick="addUrl()">添加</button>
-        </div>
-        <label class="filebtn">
-          📎 上传文件（PDF / Word / 音频 / 图片…）
-          <input type="file" id="fileInput" onchange="addFile(this)" hidden>
-        </label>
-        <button class="linklike" onclick="addTextPrompt()">✎ 粘贴一段文字</button>
+      <p class="sec-label">添加来源</p>
+      <div class="add-row">
+        <input id="urlInput" placeholder="网址 / YouTube 链接">
+        <button onclick="addUrl()">添加</button>
       </div>
+      <label class="filebtn">
+        上传文件（PDF · Word · 音频 · 图片）
+        <input type="file" id="fileInput" onchange="addFile(this)" hidden>
+      </label>
+      <button class="linklike" onclick="addTextPrompt()">粘贴一段文字</button>
+
+      <p class="sec-label">当前资料</p>
       <div class="list" id="srcList"><div class="empty">未选择笔记本</div></div>
     </section>
 
     <!-- 生成 -->
     <section class="tabpage" id="page-studio">
-      <input id="genIns" class="gen-ins" placeholder="可选：补充要求，例如「用中文，轻松一点」">
+      <p class="sec-label">补充要求（可选）</p>
+      <input id="genIns" class="gen-ins" placeholder="例如：用中文，风格轻松一些">
+
+      <p class="sec-label">音视频</p>
       <div class="grid">
-        <button class="gen" onclick="gen('audio')"><b>🎙️ 播客</b><span>音频概览 MP3</span></button>
-        <button class="gen" onclick="gen('video')"><b>🎬 视频</b><span>视频概览 MP4</span></button>
-        <button class="gen" onclick="gen('study')"><b>📖 学习指南</b><span>Markdown</span></button>
-        <button class="gen" onclick="gen('briefing')"><b>📋 简报</b><span>Markdown</span></button>
-        <button class="gen" onclick="gen('quiz')"><b>❓ 测验</b><span>题目 + 答案</span></button>
-        <button class="gen" onclick="gen('flashcards')"><b>🗂️ 闪卡</b><span>背诵卡片</span></button>
-        <button class="gen" onclick="gen('mindmap')"><b>🕸️ 思维导图</b><span>JSON</span></button>
-        <button class="gen" onclick="gen('slides')"><b>📊 幻灯片</b><span>PDF</span></button>
-        <button class="gen" onclick="gen('infographic')"><b>🖼️ 信息图</b><span>PNG</span></button>
-        <button class="gen" onclick="gen('blog')"><b>✍️ 博客稿</b><span>Markdown</span></button>
+        <button class="gen" onclick="gen('audio')"><b>播客</b><span>音频概览 MP3</span></button>
+        <button class="gen" onclick="gen('video')"><b>视频</b><span>视频概览 MP4</span></button>
       </div>
+
+      <p class="sec-label">文档</p>
+      <div class="grid">
+        <button class="gen" onclick="gen('study')"><b>学习指南</b><span>Markdown</span></button>
+        <button class="gen" onclick="gen('briefing')"><b>简报</b><span>Markdown</span></button>
+        <button class="gen" onclick="gen('blog')"><b>博客稿</b><span>Markdown</span></button>
+        <button class="gen" onclick="gen('concept')"><b>概念解释</b><span>Markdown</span></button>
+      </div>
+
+      <p class="sec-label">学习与图表</p>
+      <div class="grid">
+        <button class="gen" onclick="gen('quiz')"><b>测验</b><span>题目与答案</span></button>
+        <button class="gen" onclick="gen('flashcards')"><b>闪卡</b><span>背诵卡片</span></button>
+        <button class="gen" onclick="gen('mindmap')"><b>思维导图</b><span>JSON</span></button>
+        <button class="gen" onclick="gen('slides')"><b>幻灯片</b><span>PDF</span></button>
+        <button class="gen" onclick="gen('infographic')"><b>信息图</b><span>PNG</span></button>
+        <button class="gen" onclick="gen('datatable')"><b>数据表</b><span>CSV</span></button>
+      </div>
+
       <div class="tasks" id="tasks"></div>
+    </section>
+
+    <!-- 研究 -->
+    <section class="tabpage" id="page-research">
+      <p class="sec-label">联网研究</p>
+      <p style="font-size:14px;color:var(--muted);margin:0 0 12px;line-height:1.55">
+        让 Gemini 自动上网搜集资料，挑选后一键导入这个笔记本。
+      </p>
+      <div class="seg">
+        <button class="on" id="mode-fast" onclick="setMode('fast')">快速</button>
+        <button id="mode-deep" onclick="setMode('deep')">深度</button>
+      </div>
+      <div class="add-row">
+        <input id="rqInput" placeholder="研究主题，例如：2026 年 AI Agent 进展">
+        <button onclick="startResearch()">开始</button>
+      </div>
+      <div id="rResult"></div>
     </section>
 
     <!-- 笔记 -->
     <section class="tabpage" id="page-notes">
+      <p class="sec-label">已保存的笔记</p>
       <div class="list" id="noteList"><div class="empty">未选择笔记本</div></div>
     </section>
   </aside>
 
+</div>
+
+<!-- 输入弹层（替代 prompt，保持设计一致） -->
+<div class="mask" id="mask" onclick="if(event.target===this)closeDialog()">
+  <div class="dialog">
+    <h3 id="dlgTitle">标题</h3>
+    <p id="dlgDesc"></p>
+    <input id="dlgInput">
+    <div class="dialog-actions">
+      <button class="no" onclick="closeDialog()">取消</button>
+      <button class="ok" onclick="confirmDialog()">确定</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>

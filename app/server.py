@@ -2,7 +2,7 @@
 NotebookLM 桌面版 —— 本地聊天界面后端
 
 启动:
-    Windows:  .\\启动.bat   或   .\\scripts\\py.ps1 app\\server.py
+    Windows:  双击 启动.bat   或   .\\scripts\\app.ps1
     Linux:    ./scripts/py app/server.py
 """
 
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,7 +18,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 os.environ.setdefault("NOTEBOOKLM_HOME", str(ROOT / ".notebooklm"))
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -30,16 +29,15 @@ STATIC = Path(__file__).parent / "static"
 OUT = ROOT / "out"
 OUT.mkdir(exist_ok=True)
 
-# ---------------------------------------------------------------- 客户端管理
+# ---------------------------------------------------------------- 客户端
 
 _client: NotebookLMClient | None = None
-_client_lock = asyncio.Lock()
+_lock = asyncio.Lock()
 
 
 async def get_client() -> NotebookLMClient:
-    """惰性创建并复用一个全局客户端。"""
     global _client
-    async with _client_lock:
+    async with _lock:
         if _client is None:
             _client = await NotebookLMClient.from_storage().__aenter__()
         return _client
@@ -48,7 +46,6 @@ async def get_client() -> NotebookLMClient:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    global _client
     if _client is not None:
         try:
             await _client.close()
@@ -59,22 +56,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="NotebookLM 桌面版", lifespan=lifespan)
 
 
-# ---------------------------------------------------------------- 错误包装
-
 @app.exception_handler(Exception)
 async def on_error(request, exc: Exception):
     msg = str(exc) or exc.__class__.__name__
-    hint = ""
     low = msg.lower()
-    if "auth" in low or "cookie" in low or "sid" in low or "storage" in low:
-        hint = "认证可能已过期，请在终端运行：scripts\\nb.ps1 login"
-    return JSONResponse(
-        status_code=500,
-        content={"error": msg, "hint": hint, "type": exc.__class__.__name__},
-    )
+    hint = ""
+    if any(k in low for k in ("auth", "cookie", "sid", "storage file")):
+        hint = "认证已过期，请在终端运行： scripts\\nb.ps1 login"
+    elif "rate" in low or "429" in low:
+        hint = "请求过于频繁，请稍等片刻再试"
+    return JSONResponse(500, content={"error": msg, "hint": hint})
 
 
-# ---------------------------------------------------------------- 数据模型
+# ---------------------------------------------------------------- 模型
 
 class AskBody(BaseModel):
     notebook_id: str
@@ -99,7 +93,7 @@ class AddTextBody(BaseModel):
 
 class GenerateBody(BaseModel):
     notebook_id: str
-    kind: str                      # audio / video / quiz / flashcards / mindmap / report / slides / infographic
+    kind: str
     instructions: str | None = None
     language: str = "zh"
 
@@ -115,14 +109,25 @@ class NoteBody(BaseModel):
     content: str
 
 
+class ResearchBody(BaseModel):
+    notebook_id: str
+    query: str
+    mode: str = "fast"       # fast | deep
+    source: str = "web"      # web | drive
+
+
+class ShareBody(BaseModel):
+    notebook_id: str
+    public: bool
+
+
 # ---------------------------------------------------------------- 认证
 
 @app.get("/api/auth")
 async def api_auth() -> dict[str, Any]:
     try:
         client = await get_client()
-        email = await client.get_account_email()
-        return {"ok": True, "email": email or "已登录"}
+        return {"ok": True, "email": await client.get_account_email() or "已登录"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -132,16 +137,15 @@ async def api_auth() -> dict[str, Any]:
 @app.get("/api/notebooks")
 async def api_notebooks() -> list[dict[str, Any]]:
     client = await get_client()
-    books = await client.notebooks.list()
     return [
         {
             "id": b.id,
             "title": b.title or "(未命名)",
-            "emoji": getattr(b, "emoji", "") or "📓",
+            "emoji": getattr(b, "emoji", "") or "◇",
             "sources": getattr(b, "sources_count", 0),
             "created": str(getattr(b, "created_at", "") or "")[:10],
         }
-        for b in books
+        for b in await client.notebooks.list()
     ]
 
 
@@ -166,14 +170,19 @@ async def api_delete(notebook_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/api/summary/{notebook_id}")
+async def api_summary(notebook_id: str) -> dict[str, Any]:
+    client = await get_client()
+    return {"summary": await client.notebooks.get_summary(notebook_id)}
+
+
 # ---------------------------------------------------------------- 资料
 
 @app.get("/api/sources/{notebook_id}")
 async def api_sources(notebook_id: str) -> list[dict[str, Any]]:
     client = await get_client()
-    items = await client.sources.list(notebook_id)
     out = []
-    for s in items:
+    for s in await client.sources.list(notebook_id):
         status = "ready"
         if getattr(s, "is_processing", False):
             status = "processing"
@@ -194,25 +203,25 @@ async def api_sources(notebook_id: str) -> list[dict[str, Any]]:
 @app.post("/api/sources/url")
 async def api_add_url(body: AddUrlBody) -> dict[str, Any]:
     client = await get_client()
-    src = await client.sources.add_url(body.notebook_id, body.url)
-    return {"id": src.id, "title": src.title or body.url}
+    s = await client.sources.add_url(body.notebook_id, body.url)
+    return {"id": s.id, "title": s.title or body.url}
 
 
 @app.post("/api/sources/text")
 async def api_add_text(body: AddTextBody) -> dict[str, Any]:
     client = await get_client()
-    src = await client.sources.add_text(body.notebook_id, body.content, title=body.title)
-    return {"id": src.id, "title": src.title or body.title}
+    s = await client.sources.add_text(body.notebook_id, body.content, title=body.title)
+    return {"id": s.id, "title": s.title or body.title}
 
 
 @app.post("/api/sources/file")
 async def api_add_file(notebook_id: str = Form(...), file: UploadFile = File(...)) -> dict[str, Any]:
     client = await get_client()
-    tmp = OUT / f"_upload_{file.filename}"
+    tmp = OUT / f"_up_{file.filename}"
     tmp.write_bytes(await file.read())
     try:
-        src = await client.sources.add_file(notebook_id, str(tmp))
-        return {"id": src.id, "title": src.title or file.filename}
+        s = await client.sources.add_file(notebook_id, str(tmp))
+        return {"id": s.id, "title": s.title or file.filename}
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -224,6 +233,69 @@ async def api_del_source(notebook_id: str, source_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/api/source-text/{notebook_id}/{source_id}")
+async def api_source_text(notebook_id: str, source_id: str) -> dict[str, Any]:
+    client = await get_client()
+    txt = await client.sources.get_fulltext(notebook_id, source_id)
+    return {"text": (txt or "")[:20000]}
+
+
+# ---------------------------------------------------------------- 深度研究
+
+_RESEARCH: dict[str, dict[str, Any]] = {}
+
+
+@app.post("/api/research")
+async def api_research(body: ResearchBody) -> dict[str, Any]:
+    client = await get_client()
+    start = await client.research.start(
+        body.notebook_id, body.query, source=body.source, mode=body.mode
+    )
+    tid = start.task_id
+    _RESEARCH[tid] = {"state": "running", "query": body.query, "sources": []}
+
+    async def _run() -> None:
+        try:
+            task = await client.research.wait_for_completion(
+                body.notebook_id, tid, timeout=1800
+            )
+            _RESEARCH[tid]["sources"] = [
+                {"url": s.url, "title": s.title, "hint": getattr(s, "hint", "")}
+                for s in (task.sources or [])
+            ]
+            _RESEARCH[tid]["report"] = getattr(task, "report", "") or ""
+            _RESEARCH[tid]["state"] = "done"
+        except Exception as e:  # noqa: BLE001
+            _RESEARCH[tid]["state"] = "error"
+            _RESEARCH[tid]["error"] = str(e)
+
+    asyncio.create_task(_run())
+    return {"task_id": tid}
+
+
+@app.get("/api/research/{task_id}")
+async def api_research_status(task_id: str) -> dict[str, Any]:
+    return _RESEARCH.get(task_id, {"state": "unknown"})
+
+
+class ImportBody(BaseModel):
+    notebook_id: str
+    task_id: str
+    urls: list[str]
+
+
+@app.post("/api/research/import")
+async def api_research_import(body: ImportBody) -> dict[str, Any]:
+    client = await get_client()
+    cached = _RESEARCH.get(body.task_id, {})
+    picked = [s for s in cached.get("sources", []) if s["url"] in set(body.urls)]
+    from notebooklm import ResearchSource
+
+    objs = [ResearchSource.from_public_dict(s) for s in picked]
+    added = await client.research.import_sources(body.notebook_id, body.task_id, objs)
+    return {"count": len(added)}
+
+
 # ---------------------------------------------------------------- 聊天
 
 @app.post("/api/ask")
@@ -232,18 +304,16 @@ async def api_ask(body: AskBody) -> dict[str, Any]:
     r = await client.chat.ask(
         body.notebook_id, body.question, conversation_id=body.conversation_id
     )
-    refs = []
-    for ref in (r.references or [])[:30]:
-        refs.append(
-            {
-                "n": getattr(ref, "citation_number", None),
-                "text": (getattr(ref, "cited_text", "") or "")[:400],
-            }
-        )
     return {
         "answer": r.answer,
         "conversation_id": r.conversation_id,
-        "references": refs,
+        "references": [
+            {
+                "n": getattr(x, "citation_number", None),
+                "text": (getattr(x, "cited_text", "") or "")[:400],
+            }
+            for x in (r.references or [])[:30]
+        ],
         "next_steps": [getattr(s, "text", str(s)) for s in (r.next_steps or [])][:4],
     }
 
@@ -252,10 +322,28 @@ async def api_ask(body: AskBody) -> dict[str, Any]:
 async def api_suggest(notebook_id: str) -> list[str]:
     client = await get_client()
     try:
-        prompts = await client.notebooks.suggest_prompts(notebook_id)
-        return [getattr(p, "text", str(p)) for p in prompts][:4]
+        return [getattr(p, "text", str(p)) for p in
+                await client.notebooks.suggest_prompts(notebook_id)][:4]
     except Exception:
         return []
+
+
+@app.get("/api/history/{notebook_id}")
+async def api_history(notebook_id: str) -> list[dict[str, Any]]:
+    client = await get_client()
+    try:
+        turns = await client.chat.get_history(notebook_id)
+    except Exception:
+        return []
+    out = []
+    for t in turns or []:
+        out.append(
+            {
+                "q": getattr(t, "question", "") or "",
+                "a": getattr(t, "answer", "") or "",
+            }
+        )
+    return out[-40:]
 
 
 # ---------------------------------------------------------------- 笔记
@@ -263,10 +351,13 @@ async def api_suggest(notebook_id: str) -> list[str]:
 @app.get("/api/notes/{notebook_id}")
 async def api_notes(notebook_id: str) -> list[dict[str, Any]]:
     client = await get_client()
-    notes = await client.notes.list(notebook_id)
     return [
-        {"id": n.id, "title": n.title or "(无标题)", "content": (getattr(n, "content", "") or "")[:2000]}
-        for n in notes
+        {
+            "id": n.id,
+            "title": n.title or "(无标题)",
+            "content": (getattr(n, "content", "") or "")[:4000],
+        }
+        for n in await client.notes.list(notebook_id)
     ]
 
 
@@ -277,14 +368,43 @@ async def api_note_create(body: NoteBody) -> dict[str, Any]:
     return {"id": n.id}
 
 
+@app.delete("/api/notes/{notebook_id}/{note_id}")
+async def api_note_del(notebook_id: str, note_id: str) -> dict[str, Any]:
+    client = await get_client()
+    await client.notes.delete(notebook_id, note_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 分享
+
+@app.get("/api/share/{notebook_id}")
+async def api_share_status(notebook_id: str) -> dict[str, Any]:
+    client = await get_client()
+    try:
+        st = await client.sharing.get_status(notebook_id)
+        url = await client.notebooks.get_share_url(notebook_id)
+        return {"public": bool(getattr(st, "is_public", False)), "url": url}
+    except Exception as e:
+        return {"public": False, "url": "", "error": str(e)}
+
+
+@app.post("/api/share")
+async def api_share(body: ShareBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.sharing.set_public(body.notebook_id, body.public)
+    url = await client.notebooks.get_share_url(body.notebook_id)
+    return {"public": body.public, "url": url}
+
+
 # ---------------------------------------------------------------- 生成
 
 _TASKS: dict[str, dict[str, Any]] = {}
 
-_REPORT_FORMATS = {
+_REPORTS = {
     "briefing": ReportFormat.BRIEFING_DOC,
     "study": ReportFormat.STUDY_GUIDE,
     "blog": ReportFormat.BLOG_POST,
+    "concept": ReportFormat.CONCEPT_EXPLANATION,
 }
 
 
@@ -292,45 +412,46 @@ _REPORT_FORMATS = {
 async def api_generate(body: GenerateBody) -> dict[str, Any]:
     client = await get_client()
     a = client.artifacts
-    k = body.kind
-    ins = body.instructions or None
-    lang = body.language
+    k, ins, lang = body.kind, body.instructions or None, body.language
+    nb = body.notebook_id
 
     if k == "audio":
-        st = await a.generate_audio(body.notebook_id, language=lang, instructions=ins)
+        st = await a.generate_audio(nb, language=lang, instructions=ins)
     elif k == "video":
-        st = await a.generate_video(body.notebook_id, language=lang, instructions=ins)
+        st = await a.generate_video(nb, language=lang, instructions=ins)
+    elif k == "cinematic":
+        st = await a.generate_cinematic_video(nb, language=lang, instructions=ins)
     elif k == "quiz":
-        st = await a.generate_quiz(body.notebook_id, language=lang, instructions=ins)
+        st = await a.generate_quiz(nb, language=lang, instructions=ins)
     elif k == "flashcards":
-        st = await a.generate_flashcards(body.notebook_id, language=lang, instructions=ins)
+        st = await a.generate_flashcards(nb, language=lang, instructions=ins)
     elif k == "slides":
-        st = await a.generate_slide_deck(body.notebook_id, language=lang, instructions=ins)
+        st = await a.generate_slide_deck(nb, language=lang, instructions=ins)
     elif k == "infographic":
-        st = await a.generate_infographic(body.notebook_id, language=lang, instructions=ins)
+        st = await a.generate_infographic(nb, language=lang, instructions=ins)
+    elif k == "datatable":
+        st = await a.generate_data_table(nb, language=lang, instructions=ins)
     elif k == "mindmap":
-        st = await a.generate_mind_map(body.notebook_id)
-    elif k in _REPORT_FORMATS:
+        st = await a.generate_mind_map(nb)
+    elif k in _REPORTS:
         st = await a.generate_report(
-            body.notebook_id, report_format=_REPORT_FORMATS[k], language=lang,
-            extra_instructions=ins,
+            nb, report_format=_REPORTS[k], language=lang, extra_instructions=ins
         )
     else:
         raise HTTPException(400, f"未知类型: {k}")
 
-    task_id = st.task_id
-    _TASKS[task_id] = {"kind": k, "notebook": body.notebook_id, "state": "running"}
+    tid = st.task_id
+    _TASKS[tid] = {"kind": k, "state": "running"}
 
     async def _run() -> None:
         try:
-            await a.wait_for_completion(body.notebook_id, task_id, timeout=1800)
-            _TASKS[task_id]["state"] = "done"
+            await a.wait_for_completion(nb, tid, timeout=1800)
+            _TASKS[tid]["state"] = "done"
         except Exception as e:  # noqa: BLE001
-            _TASKS[task_id]["state"] = "error"
-            _TASKS[task_id]["error"] = str(e)
+            _TASKS[tid].update(state="error", error=str(e))
 
     asyncio.create_task(_run())
-    return {"task_id": task_id, "kind": k}
+    return {"task_id": tid, "kind": k}
 
 
 @app.get("/api/task/{task_id}")
@@ -338,28 +459,30 @@ async def api_task(task_id: str) -> dict[str, Any]:
     return _TASKS.get(task_id, {"state": "unknown"})
 
 
-_DOWNLOADERS = {
+_DL = {
     "audio": ("download_audio", "mp3"),
     "video": ("download_video", "mp4"),
+    "cinematic": ("download_video", "mp4"),
     "quiz": ("download_quiz", "md"),
     "flashcards": ("download_flashcards", "md"),
     "slides": ("download_slide_deck", "pdf"),
     "infographic": ("download_infographic", "png"),
     "mindmap": ("download_mind_map", "json"),
+    "datatable": ("download_data_table", "csv"),
     "briefing": ("download_report", "md"),
     "study": ("download_report", "md"),
     "blog": ("download_report", "md"),
+    "concept": ("download_report", "md"),
 }
 
 
 @app.get("/api/download/{notebook_id}/{kind}")
 async def api_download(notebook_id: str, kind: str):
-    if kind not in _DOWNLOADERS:
+    if kind not in _DL:
         raise HTTPException(400, f"不支持下载: {kind}")
     client = await get_client()
-    method, ext = _DOWNLOADERS[kind]
-    safe = notebook_id[:8]
-    path = OUT / f"{kind}_{safe}.{ext}"
+    method, ext = _DL[kind]
+    path = OUT / f"{kind}_{notebook_id[:8]}.{ext}"
     fn = getattr(client.artifacts, method)
     try:
         if kind in ("quiz", "flashcards"):
@@ -369,7 +492,7 @@ async def api_download(notebook_id: str, kind: str):
     except TypeError:
         await fn(notebook_id, str(path))
     if not path.exists():
-        raise HTTPException(404, "还没有生成好的产物，请先点生成并等待完成")
+        raise HTTPException(404, "还没有生成好的产物")
     return FileResponse(path, filename=path.name)
 
 
@@ -388,13 +511,30 @@ async def api_artifacts(notebook_id: str) -> list[dict[str, Any]]:
                 "id": getattr(x, "id", ""),
                 "type": getattr(t, "value", str(t)),
                 "title": getattr(x, "title", "") or "",
-                "state": str(getattr(x, "state", "") or getattr(x, "status", "")),
             }
         )
     return out
 
 
-# ---------------------------------------------------------------- 静态页面
+@app.get("/api/open-folder")
+async def api_open_folder() -> dict[str, Any]:
+    """在系统文件管理器里打开 out 目录。"""
+    import subprocess
+    import sys
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(OUT)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(OUT)])
+        else:
+            subprocess.Popen(["xdg-open", str(OUT)])
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------- 静态
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
@@ -411,17 +551,18 @@ def main() -> None:
     host = os.environ.get("HOST", "127.0.0.1")
 
     if os.environ.get("NB_OPEN_BROWSER", "1") == "1" and host in ("127.0.0.1", "localhost"):
+        import threading
+        import time
+
         def _open() -> None:
-            import time
             time.sleep(1.5)
             webbrowser.open(f"http://127.0.0.1:{port}")
 
-        import threading
         threading.Thread(target=_open, daemon=True).start()
 
     print()
     print("  NotebookLM 桌面版已启动")
-    print(f"  请在浏览器打开:  http://127.0.0.1:{port}")
+    print(f"  浏览器打开:  http://127.0.0.1:{port}")
     print("  按 Ctrl+C 退出")
     print()
 
