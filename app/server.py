@@ -467,9 +467,12 @@ def _research_error_cn(exc: Exception) -> str:
     name = type(exc).__name__
     text = f"{name}: {exc}".lower()
 
-    if "no_research" in text:
-        return ("Google 没有认领这次研究任务。通常是它那边没真正启动，"
-                "换个说法重新发起一次即可。")
+    if "not_found" in text or "找不到这个研究任务" in str(exc):
+        return ("Google 把这个研究任务丢弃了。这是它那边的问题，"
+                "重新发起一次通常就好；深度模式不稳时可以先用「快速」模式。")
+    if "no_research" in text or "始终没有认领" in str(exc):
+        return ("Google 一直没有认领这次研究。通常是深度模式排队失败，"
+                "建议换个说法重试，或先用「快速」模式拿结果。")
     if "timeout" in text or "timedout" in name.lower():
         return "研究超时了。Google 侧可能正忙，稍后重试，或改用「快速」模式。"
     if "ambiguous" in text:
@@ -532,8 +535,27 @@ async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
                 last_status = st
             _RESEARCH[tid]["status_text"] = last_status
             _RESEARCH[tid]["elapsed"] = int(elapsed)
+
             if st in ("completed", "failed"):
                 return task
+
+            # not_found 是终止态：Google 已经把这个任务丢了，
+            # 再等下去也不会变。之前没判断，会一路转到 40 分钟超时。
+            if st == "not_found":
+                raise RuntimeError(
+                    "Google 已经找不到这个研究任务了（not_found），"
+                    "多半是它那边把任务丢弃了"
+                )
+
+            # 卡在 no_research 说明 Google 压根没认领。
+            # 正常情况几十秒内就会转成 in_progress，
+            # 超过 5 分钟还是这个状态就没必要继续等了。
+            if st == "no_research" and elapsed > 300:
+                raise RuntimeError(
+                    f"等了 {int(elapsed / 60)} 分钟，Google 始终没有认领这个任务"
+                    "（状态一直是 no_research）"
+                )
+
             misses = 0
         else:
             misses += 1

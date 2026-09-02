@@ -784,15 +784,25 @@ async function pollResearch(tid, nbId) {
     if (s.state === "running") {
       const mm = Math.floor((s.elapsed || 0) / 60);
       const ss = (s.elapsed || 0) % 60;
-      const label = { in_progress: "正在搜集资料", no_research: "正在启动" }[s.status_text]
-        || "正在联网研究";
+      // 把所有可能的状态都翻出来，别让用户对着一个模糊的兜底文案发呆
+      const LABELS = {
+        in_progress: "正在搜集资料",
+        no_research: "等待 Google 认领任务",
+        not_found: "任务已丢失",
+        completed: "即将出结果",
+        failed: "失败了",
+      };
+      const label = LABELS[s.status_text] || "正在联网研究";
+      // 卡在等待认领超过 2 分钟，提前告诉用户这次多半不会成
+      const stuck = s.status_text === "no_research" && (s.elapsed || 0) > 120;
       $("rResult").innerHTML =
         `<div class="task"><div class="spin"></div>
            <div class="task-name">${label}…
              <span class="hint-inline">已用 ${mm} 分 ${ss} 秒</span></div>
          </div>
-         <p class="hint" style="margin-top:8px">深度模式通常 5-10 分钟。
-           可以切到别的页面，甚至刷新，结果不会丢。</p>
+         <p class="hint" style="margin-top:8px">${stuck
+           ? "Google 迟迟没有认领这次任务，多半不会有结果了。建议取消后改用「快速」模式。"
+           : "深度模式通常 5-10 分钟。可以切到别的页面，甚至刷新，结果不会丢。"}</p>
          <div class="add-row" style="margin-top:10px">
            <button class="mini danger" data-act="cancelResearch">取消研究</button>
          </div>`;
