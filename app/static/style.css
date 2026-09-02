@@ -786,3 +786,52 @@ h1, h2, h3 {
 .dl-btn.ghost:hover {
   background: var(--surface-card); color: var(--ink); border-color: var(--muted-soft);
 }
+
+/* ── 产物行：信息与操作分两行 ──
+   侧栏只有 300 多像素，一行放不下「两个下载按钮 + 4 个图标」，
+   挤到最后标题会被压成竖排单字。 */
+.art-item { flex-direction: column; align-items: stretch; gap: 10px; }
+
+.art-item .item-title {
+  /* 两行内显示完整标题，不再一律省略成几个字 */
+  white-space: normal;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.art-actions {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+/* 操作图标常驻，不再靠 hover 才出现 —— 移动端根本没有 hover */
+.art-item .nb-ops { opacity: 1; margin-left: auto; }
+.art-item .dl-group,
+.art-item .dl-btn { margin-left: 0; }
+
+/* 窄栏时下载按钮占满一行，图标另起一行 */
+@media (max-width: 380px) {
+  .art-actions { flex-direction: column; align-items: stretch; }
+  .art-item .dl-group { width: 100%; }
+  .art-item .dl-group .dl-btn { flex: 1; justify-content: center; }
+  .art-item .nb-ops { margin-left: 0; justify-content: flex-end; }
+}
+
+/* ── 资料 / 笔记 / 共享列表 ──
+   这些行有 3-4 个操作图标，同样会把标题挤窄。
+   给操作区一个不换行的最小宽度，标题区允许收缩到省略号，
+   窄到放不下时整体转竖排。 */
+#srcList .item,
+#noteList .item,
+#shareUsers .item { gap: 8px; }
+
+#srcList .nb-ops,
+#noteList .nb-ops,
+#shareUsers .nb-ops { flex: 0 0 auto; opacity: 1; }
+
+@media (max-width: 400px) {
+  #srcList .item,
+  #noteList .item {
+    flex-direction: column; align-items: stretch;
+  }
+  #srcList .nb-ops,
+  #noteList .nb-ops { justify-content: flex-end; }
+}

@@ -173,12 +173,24 @@ async function pick(id) {
   $("tasks").innerHTML = "";
   $("rResult").innerHTML = "";
   RTASK = null;
+  DEEP_FAILS = 0;
+
+  // 「生成」页的两块内容以前只在切 tab 时才加载 ——
+  // 如果用户本来就停在生成页再换笔记本，这里会一直显示上一个
+  // 笔记本的产物和报告建议。先清空，再按需重新拉取。
+  $("artList").innerHTML = '<div class="empty">载入中…</div>';
+  $("reportSuggest").innerHTML = "";
+  SRC_CACHE = [];
+  NOTES_CACHE = [];
+
   loadSources();
   loadNotes();
   loadLabels();
   loadHistory();      // ← 先补历史，再给建议
   restoreResearch();  // 刷新页面后把进行中的研究接回来
   restoreTasks();     // 生成任务同理
+  // 停在生成页时立刻刷新产物库；在别的页则等切过去时再拉，省一次请求
+  if ($("page-studio").classList.contains("active")) loadArtifacts();
 }
 
 /** 载入过去的问答，让上下文可见 */
@@ -455,6 +467,8 @@ async function delNotebook(id) {
 }
 
 function resetMain() {
+  // 自己也清一次，别只依赖调用方记得清
+  CUR = null;
   $("nbTitle").textContent = "选择一个笔记本";
   $("nbSub").textContent = "";
   $("chat").innerHTML = `<div class="welcome">
@@ -467,6 +481,15 @@ function resetMain() {
   $("suggest").innerHTML = "";
   $("srcList").innerHTML = "";
   $("noteList").innerHTML = "";
+  $("labelList").innerHTML = "";
+  $("artList").innerHTML = '<div class="empty">未选择笔记本</div>';
+  $("reportSuggest").innerHTML = "";
+  $("tasks").innerHTML = "";
+  $("rResult").innerHTML = "";
+  SRC_CACHE = [];
+  NOTES_CACHE = [];
+  RTASK = null;
+  CONV = null;
 }
 
 // ---------------------------------------------------------------- 资料
@@ -1462,10 +1485,16 @@ const TYPE_EXT = {
 
 //: 支持多格式的产物（与后端 _DL_FORMATS 对应）。
 //: 幻灯片的 PPTX 是可编辑的，之前只给了 PDF。
+//: [格式值, 按钮文字, 悬停说明]。按钮文字要短 —— 侧栏很窄。
 const MULTI_FMT = {
-  slide_deck: [["pptx", "PPTX 可编辑"], ["pdf", "PDF"]],
-  quiz: [["markdown", "Markdown"], ["html", "网页"], ["json", "JSON"]],
-  flashcards: [["markdown", "Markdown"], ["html", "网页"], ["json", "JSON"]],
+  slide_deck: [["pptx", "PPTX", "可编辑的 PowerPoint 文件"],
+               ["pdf", "PDF", "只读，方便分享打印"]],
+  quiz: [["markdown", "MD", "Markdown 文本"],
+         ["html", "网页", "可直接打开的 HTML"],
+         ["json", "JSON", "结构化数据"]],
+  flashcards: [["markdown", "MD", "Markdown 文本"],
+               ["html", "网页", "可直接打开的 HTML"],
+               ["json", "JSON", "结构化数据"]],
 };
 
 //: 生成类型 -> 产物类型
@@ -1478,9 +1507,9 @@ function taskDlButtons(nbId, kind) {
     return `<a class="dl-btn" href="${base}" download>
               <svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
   }
-  return `<span class="dl-group">` + fmts.map(([f, label], i) =>
+  return `<span class="dl-group">` + fmts.map(([f, label, tip], i) =>
     `<a class="dl-btn${i ? " ghost" : ""}" href="${base}?format=${f}" download
-        title="下载 ${esc(label)}">${i ? "" :
+        title="${esc(tip || label)}">${i ? "" :
         '<svg class="ico"><use href="#i-download"/></svg>'}<span>${esc(label)}</span></a>`
   ).join("") + `</span>`;
 }
@@ -1494,9 +1523,9 @@ function dlButtons(nbId, x) {
               <svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
   }
   // 第一个是推荐格式，其余收在后面
-  return `<span class="dl-group">` + fmts.map(([f, label], i) =>
+  return `<span class="dl-group">` + fmts.map(([f, label, tip], i) =>
     `<a class="dl-btn${i ? " ghost" : ""}" href="${base}?format=${f}" download
-        title="下载 ${esc(label)}">${i ? "" :
+        title="${esc(tip || label)}">${i ? "" :
         '<svg class="ico"><use href="#i-download"/></svg>'}<span>${esc(label)}</span></a>`
   ).join("") + `</span>`;
 }
@@ -1508,9 +1537,13 @@ const TYPE_CN = {
 };
 
 async function loadArtifacts() {
-  if (!CUR) return;
-  const mine = CUR.id;
   const box = $("artList");
+  if (!CUR) {
+    // 否则 pick() 里设的「载入中…」会一直挂着
+    box.innerHTML = '<div class="empty">未选择笔记本</div>';
+    return;
+  }
+  const mine = CUR.id;
   box.innerHTML = '<div class="empty">载入中…</div>';
   try {
     const items = await api(`/api/artifacts/${mine}`);
@@ -1523,20 +1556,25 @@ async function loadArtifacts() {
       const st = x.failed ? '<span class="badge err">失败</span>'
         : x.running ? '<span class="badge run">生成中</span>' : "";
       const dur = x.duration ? ` · ${Math.round(x.duration / 60)} 分钟` : "";
-      return `<div class="item">
+      const ops = [
+        x.done ? `<button class="x" data-act="artifactPrompt" data-a0="${esc(x.id)}" title="查看生成提示词">☰</button>` : "",
+        x.done ? `<button class="x" data-act="exportArtifact" data-a0="${esc(x.id)}" data-a1="${esc(x.title)}" title="导出到 Google 文档">↗</button>` : "",
+        x.failed ? `<button class="x" data-act="retryArtifact" data-a0="${esc(x.id)}" title="重试">↻</button>` : "",
+        `<button class="x" data-act="renameArtifact" data-a0="${esc(x.id)}" title="重命名">✎</button>`,
+        `<button class="x" data-act="delArtifact" data-a0="${esc(x.id)}" title="删除">✕</button>`,
+      ].join("");
+      const dl = x.done && DOWNLOADABLE.has(x.type) ? dlButtons(mine, x) : "";
+      // 竖向两行：信息一行、操作一行。
+      // 原先全塞进一行横向 flex，按钮都是 flex:0 0 auto 不可压缩，
+      // 侧栏一窄就把标题挤成竖排单字，非常难看。
+      return `<div class="item art-item">
         <div class="item-body">
           <div class="item-title">${esc(x.title || TYPE_CN[x.type] || "未命名")} ${st}</div>
           <div class="item-sub">${esc(TYPE_CN[x.type] || "其他")}${dur}${
             x.created ? " · " + esc(x.created) : ""}</div>
         </div>
-        ${x.done && DOWNLOADABLE.has(x.type) ? dlButtons(mine, x) : ""}
-        <span class="nb-ops">
-          ${x.done ? `<button class="x" data-act="artifactPrompt" data-a0="${esc(x.id)}" title="查看生成提示词">☰</button>` : ""}
-          ${x.done ? `<button class="x" data-act="exportArtifact" data-a0="${esc(x.id)}" data-a1="${esc(x.title)}" title="导出到 Google 文档">↗</button>` : ""}
-          ${x.failed ? `<button class="x" data-act="retryArtifact" data-a0="${esc(x.id)}" title="重试">↻</button>` : ""}
-          <button class="x" data-act="renameArtifact" data-a0="${esc(x.id)}" title="重命名">✎</button>
-          <button class="x" data-act="delArtifact" data-a0="${esc(x.id)}" title="删除">✕</button>
-        </span></div>`;
+        <div class="art-actions">${dl}<span class="nb-ops">${ops}</span></div>
+      </div>`;
     }).join("");
     scPages.studio?.sync();
   } catch (e) {
