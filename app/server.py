@@ -357,22 +357,63 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
         body.notebook_id, body.query, source=body.source, mode=body.mode
     )
     tid = start.task_id
-    _RESEARCH[tid] = {"state": "running", "query": body.query, "sources": []}
+    _RESEARCH[tid] = {
+        "state": "running", "query": body.query,
+        "notebook_id": body.notebook_id, "sources": [],
+    }
 
     async def _run() -> None:
         try:
             task = await client.research.wait_for_completion(
                 body.notebook_id, tid, timeout=1800
             )
+            status = str(getattr(getattr(task, "status", ""), "value", "") or "")
+
+            # 深度研究会把结果拆到子任务里，主任务的 sources 可能是空的。
+            # 这里把主任务和所有子任务的来源合并去重。
+            collected: list[Any] = list(getattr(task, "sources", None) or ())
+            for sub in getattr(task, "tasks", None) or ():
+                collected.extend(getattr(sub, "sources", None) or ())
+
+            seen: set[str] = set()
+            merged: list[Any] = []
+            for src in collected:
+                u = getattr(src, "url", "") or ""
+                key = u or f"__report_{len(merged)}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(src)
+
+            # 保留完整的 ResearchSource 对象，导入时原样回传。
+            # 之前只存 url/title/hint 再重建，丢掉了 research_task_id、
+            # result_type、source_ordinal，Google 侧会拒收。
+            _RESEARCH[tid]["objs"] = merged
             _RESEARCH[tid]["sources"] = [
-                {"url": s.url, "title": s.title, "hint": getattr(s, "hint", "")}
-                for s in (task.sources or [])
+                {
+                    "url": getattr(x, "url", "") or "",
+                    "title": getattr(x, "title", "") or "未命名",
+                    "hint": getattr(x, "hint", "") or "",
+                    "is_report": bool(getattr(x, "report_markdown", "")),
+                }
+                for x in merged
             ]
             _RESEARCH[tid]["report"] = getattr(task, "report", "") or ""
-            _RESEARCH[tid]["state"] = "done"
+            _RESEARCH[tid]["summary"] = getattr(task, "summary", "") or ""
+
+            if status == "failed":
+                _RESEARCH[tid]["state"] = "error"
+                _RESEARCH[tid]["error"] = "Google 侧研究失败，换个说法或稍后再试"
+            elif not merged:
+                _RESEARCH[tid]["state"] = "error"
+                _RESEARCH[tid]["error"] = (
+                    f"研究完成但没有返回可导入的来源（状态 {status or '未知'}）"
+                )
+            else:
+                _RESEARCH[tid]["state"] = "done"
         except Exception as e:  # noqa: BLE001
             _RESEARCH[tid]["state"] = "error"
-            _RESEARCH[tid]["error"] = str(e)
+            _RESEARCH[tid]["error"] = f"{type(e).__name__}: {e}"
 
     asyncio.create_task(_run())
     return {"task_id": tid}
@@ -380,7 +421,11 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
 
 @app.get("/api/research/{task_id}")
 async def api_research_status(task_id: str) -> dict[str, Any]:
-    return _RESEARCH.get(task_id, {"state": "unknown"})
+    d = _RESEARCH.get(task_id)
+    if d is None:
+        return {"state": "unknown"}
+    # objs 是 SDK 对象，不能序列化，返回时剔除
+    return {k: v for k, v in d.items() if k != "objs"}
 
 
 class ImportBody(BaseModel):
@@ -391,14 +436,47 @@ class ImportBody(BaseModel):
 
 @app.post("/api/research/import")
 async def api_research_import(body: ImportBody) -> dict[str, Any]:
-    client = await get_client()
-    cached = _RESEARCH.get(body.task_id, {})
-    picked = [s for s in cached.get("sources", []) if s["url"] in set(body.urls)]
-    from notebooklm import ResearchSource
+    """把选中的研究来源导入笔记本。
 
-    objs = [ResearchSource.from_public_dict(s) for s in picked]
-    added = await client.research.import_sources(body.notebook_id, body.task_id, objs)
-    return {"count": len(added)}
+    import_sources 的返回值不可靠（官方文档明说可能少报），
+    所以用导入前后的资料数差值来判断真实结果。
+    """
+    client = await get_client()
+    cached = _RESEARCH.get(body.task_id)
+    if not cached:
+        raise HTTPException(400, "研究结果已过期，请重新研究一次")
+
+    want = set(body.urls)
+    objs = [x for x in cached.get("objs", []) if (getattr(x, "url", "") or "") in want]
+    if not objs:
+        raise HTTPException(400, "没有匹配到选中的来源")
+
+    try:
+        before = {getattr(s, "id", "") for s in await client.sources.list(body.notebook_id)}
+    except Exception:
+        before = set()
+
+    reported = await client.research.import_sources(body.notebook_id, body.task_id, objs)
+
+    # 导入是异步的，等 Google 那边真正落库
+    added: set[str] = set()
+    for _ in range(12):
+        await asyncio.sleep(2.5)
+        try:
+            now = {getattr(s, "id", "") for s in await client.sources.list(body.notebook_id)}
+        except Exception:
+            continue
+        added = now - before
+        if len(added) >= len(objs):
+            break
+
+    count = len(added) or len(reported or [])
+    return {
+        "count": count,
+        "requested": len(objs),
+        "verified": len(added),
+        "note": "" if count >= len(objs) else "部分来源可能仍在后台处理，稍后刷新资料列表",
+    }
 
 
 # ---------------------------------------------------------------- 聊天

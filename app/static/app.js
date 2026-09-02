@@ -658,7 +658,13 @@ async function pollResearch(tid, nbId) {
     await new Promise((r) => setTimeout(r, 3000));
     if (CUR?.id !== nbId) return;      // 切走了就停，别再改别人的界面
     let s;
-    try { s = await api(`/api/research/${tid}`); } catch { continue; }
+    // 这里不能用 api()：状态体里的 error 是「研究失败」的正常字段，
+    // api() 见到 error 就抛异常，会被 catch 吞掉导致永远转圈。
+    try {
+      const r = await fetch(`/api/research/${tid}`);
+      s = await r.json();
+    } catch { continue; }
+    if (!s || !s.state) continue;
 
     if (s.state === "done") {
       const list = s.sources || [];
@@ -667,12 +673,16 @@ async function pollResearch(tid, nbId) {
         return;
       }
       $("rResult").innerHTML =
-        `<p class="sec-label" style="margin-top:16px">找到 ${list.length} 个来源</p>` +
+        `<div class="sec-head" style="margin-top:16px">
+           <p class="sec-label">找到 ${list.length} 个来源</p>
+           <button class="mini" data-act="toggleAllResearch">全选 / 全不选</button>
+         </div>` +
         list.map((x) => `<label class="rsrc">
             <input type="checkbox" checked value="${esc(x.url)}">
             <div style="min-width:0">
-              <div class="rsrc-t">${esc(x.title || "无标题")}</div>
-              <div class="rsrc-u">${esc(x.url)}</div>
+              <div class="rsrc-t">${esc(x.title || "无标题")}
+                ${x.is_report ? '<span class="badge run">研究报告</span>' : ""}</div>
+              <div class="rsrc-u">${esc(x.url || "（报告正文，无链接）")}</div>
             </div></label>`).join("") +
         `<div class="add-row" style="margin-top:12px">
            <button style="flex:1" data-act="importResearch">导入选中的来源</button>
@@ -681,27 +691,61 @@ async function pollResearch(tid, nbId) {
       return;
     }
     if (s.state === "error") {
-      $("rResult").innerHTML = `<div class="empty">${esc(s.error || "研究失败")}</div>`;
+      $("rResult").innerHTML =
+        `<div class="empty">${esc(s.error || "研究失败")}
+           <br><br><button class="mini" data-act="startResearch">重新研究</button></div>`;
+      return;
+    }
+    if (s.state === "unknown") {
+      $("rResult").innerHTML =
+        '<div class="empty">任务丢失了，可能是后台重启过，请重新研究</div>';
       return;
     }
   }
+  // 30 分钟还没完，给个交代，别一直转圈
+  $("rResult").innerHTML =
+    '<div class="empty">等待超时。深度研究有时要更久，稍后回到这个页面再看看</div>';
+}
+
+function toggleAllResearch() {
+  const boxes = [...document.querySelectorAll("#rResult input[type=checkbox]")];
+  const on = boxes.some((b) => !b.checked);
+  boxes.forEach((b) => (b.checked = on));
 }
 
 async function importResearch() {
-  const urls = [...document.querySelectorAll("#rResult input:checked")].map((i) => i.value);
+  const boxes = [...document.querySelectorAll("#rResult input:checked")];
+  const urls = boxes.map((i) => i.value);
   if (!urls.length) return toast("请至少选一个", true);
-  toast("正在导入…");
+  const nbId = CUR?.id;
+  if (!nbId) return toast("请先选择笔记本", true);
+
+  const btn = document.querySelector('#rResult [data-act="importResearch"]');
+  if (btn) { btn.disabled = true; btn.textContent = "正在导入，请稍候…"; }
+  toast(`正在导入 ${urls.length} 个来源，可能要等十几秒`);
+
   try {
     const r = await api("/api/research/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notebook_id: CUR.id, task_id: RTASK, urls }),
+      body: JSON.stringify({ notebook_id: nbId, task_id: RTASK, urls }),
     });
-    toast(`已导入 ${r.count} 个来源`);
+
+    // 之前不管结果如何都清空结果并跳转，导入 0 个也看着像成功
+    if (!r.count) {
+      if (btn) { btn.disabled = false; btn.textContent = "重试导入"; }
+      toast("一个都没导入成功，来源可能已失效，换几个再试", true);
+      return;
+    }
+
+    toast(r.note ? `已导入 ${r.count} 个，${r.note}` : `已导入 ${r.count} 个来源`);
     $("rResult").innerHTML = "";
     switchTab("sources");
     loadSources();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = "重试导入"; }
+    toast(e.message, true);
+  }
 }
 
 // ---------------------------------------------------------------- 生成
@@ -1264,7 +1308,7 @@ Object.assign(ACTIONS, {
 
   pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
-  setMode, startResearch, importResearch, gen, openFolder,
+  setMode, startResearch, importResearch, toggleAllResearch, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
   renameNotebook, delNotebook, clearHistory,
