@@ -1,0 +1,9 @@
+# NotebookLM 底座：唯一被采纳的实现（详见 docs/调研/01-生态分析.md）
+#
+# [mcp]      —— 项目级 MCP 入口（scripts/agent-mcp -> python -m notebooklm.mcp）
+# [headless] —— master token 认证（gpsoauth，纯 Python），无浏览器无人值守必需
+# [markdown] —— source fulltext -f markdown，研究报告回看来源原文时用
+#
+# 不装 [browser]：沙箱无 display 无 Chromium，交互式 login 在这里跑不了。
+# 不装 [cookies]：同理，扒浏览器 cookie 需要本机有浏览器。
+notebooklm-py[mcp,headless,markdown]>=0.8.1,<0.9

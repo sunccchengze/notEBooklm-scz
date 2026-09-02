@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# notebooklm CLI 的薄封装：自动用本仓库 .venv，把数据存在仓库内 .notebooklm/
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export NOTEBOOKLM_HOME="${NOTEBOOKLM_HOME:-$ROOT/.notebooklm}"
+mkdir -p "$NOTEBOOKLM_HOME"
+exec "$ROOT/.venv/bin/notebooklm" "$@"

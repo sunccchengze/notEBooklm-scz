@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "notebooklm": {
+      "command": "bash",
+      "args": ["./scripts/agent-mcp"]
+    }
+  }
+}

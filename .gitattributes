@@ -1,0 +1,11 @@
+# PowerShell 脚本：检出为 CRLF。文件本身带 UTF-8 BOM，
+# 否则 Windows PowerShell 5.1 会用 GBK 解码，导致中文乱码与语法错误。
+*.ps1 text eol=crlf
+
+# Shell 脚本与 Python 必须保持 LF
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+scripts/nb text eol=lf
+scripts/py text eol=lf
+*.bat text eol=crlf

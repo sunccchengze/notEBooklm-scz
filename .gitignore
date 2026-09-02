@@ -1,0 +1,23 @@
+# 凭据 —— 任何情况下都不许进 Git
+.notebooklm/
+storage_state.json
+master_token.json
+cookies.json
+.env
+.env.*
+
+# 环境与产物
+.venv
+.venv/
+out/*
+!out/.gitkeep
+
+# 工单执行结果（结果由 worker 回写，但本地跑出来的中间态不入库）
+jobs/.local/
+
+# Python
+__pycache__/
+*.pyc
+
+# 前端 sourcemap（若将来重新引入界面）
+app/static/*.map

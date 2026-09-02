@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Arena Agent -> NotebookLM MCP bridge.
+# Authentication state is deliberately kept outside Git and is supplied through
+# NOTEBOOKLM_HOME (or the repository-local .notebooklm directory).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export NOTEBOOKLM_HOME="${NOTEBOOKLM_HOME:-$ROOT/.notebooklm}"
+mkdir -p "$NOTEBOOKLM_HOME"
+
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  echo "NotebookLM environment is not installed. Run ./scripts/setup.sh first." >&2
+  exit 1
+fi
+
+# notebooklm-py binds an authenticated client during MCP startup. Fail with a
+# useful message instead of exposing its long traceback to the Agent.
+PROFILE_DIR="$NOTEBOOKLM_HOME/profiles/default"
+if [[ ! -f "$PROFILE_DIR/storage_state.json" && ! -f "$PROFILE_DIR/master_token.json" ]]; then
+  echo "NotebookLM is not authenticated for this Agent." >&2
+  echo "Import a valid storage_state.json or master_token.json into:" >&2
+  echo "  $PROFILE_DIR" >&2
+  echo "See docs/arena-agent.md; never commit either file." >&2
+  exit 1
+fi
+
+exec "$ROOT/.venv/bin/python" -m notebooklm.mcp "$@"

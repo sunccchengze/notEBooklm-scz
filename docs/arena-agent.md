@@ -1,0 +1,188 @@
+# Arena Agent × NotebookLM
+
+本文说清两件事：**凭据怎么进来**，**两条路线各自怎么跑**。
+行为约束（什么必须问、什么不许做）在 [../AGENTS.md](../AGENTS.md)，不重复。
+
+---
+
+## 1. 现状：沙箱打不通 Google
+
+实测（可复现，见 [调研/02-环境实测.md](调研/02-环境实测.md)）：
+
+- 所有出网走 E2B 的 MITM 代理（`issuer: O=E2B; CN=E2B Proxy CA`），按 **SNI 白名单**放行。
+- 通：`github.com`、`api.github.com`、`pypi.org`、`files.pythonhosted.org`、`registry.npmjs.org`
+- 不通：`*.google.com`、`googleapis.com`，连 `example.com`、`raw.githubusercontent.com` 也不通
+- 拦截在 **TLS 层**：TCP 握手能成，Client Hello 发出后被 reset
+- 沙箱无 `DISPLAY`、无 Chromium ⇒ 交互式 `notebooklm login` 和一切浏览器自动化都不可用
+
+推论：自建隧道（Cloudflare / Tailscale / ngrok）同样不通，因为它们的域名也是白名单外的 SNI。
+
+但 `notebooklm-py` 本身**装得上、跑得动**，`gh` 也已认证 ⇒ GitHub 可以当通信信道。
+
+---
+
+## 2. 凭据：只走 master token
+
+沙箱里没浏览器，所以凭据只能**外部注入**。三种凭据里只有一种合适：
+
+| 凭据 | 能不能用 | 原因 |
+|---|---|---|
+| `master_token.json` | ✅ **用这个** | 不轮换，过期自动 re-mint，无人值守可用 |
+| `storage_state.json` | ⚠️ 仅单次验证 | 上游文档：cookie 快照约 10 分钟就被其它客户端顶替 |
+| `NOTEBOOKLM_AUTH_JSON` 内联 | ⚠️ 仅单次调用 | 不触发 re-mint，无法持久化轮换 |
+
+### 2.1 一次性 bootstrap（在有浏览器的机器上）
+
+```bash
+pip install "notebooklm-py[browser,headless]"
+notebooklm login --master-token --account you@example.com
+# → 写出 ~/.notebooklm/profiles/default/master_token.json
+```
+
+> **用专用小号。** 上游 `docs/security.md` 的原话：master token 是
+> "full-account, durable, and infostealer-grade"，**改密码不能撤销它**，
+> 只能去 Google 账号 → 安全性 → 你的设备 里显式移除。
+
+### 2.2 注入沙箱
+
+```bash
+# 方式 1（推荐）：受保护持久化路径
+export NOTEBOOKLM_MASTER_TOKEN_FILE=/受保护路径/master_token.json
+./scripts/inject-token.sh
+
+# 方式 2：内联（用完必须 unset —— 环境变量会被子进程继承，文件不会）
+export NOTEBOOKLM_MASTER_TOKEN_JSON="$(cat /受保护路径/master_token.json)"
+./scripts/inject-token.sh && unset NOTEBOOKLM_MASTER_TOKEN_JSON
+```
+
+`inject-token.sh` 会：验证 JSON 合法 → 落盘 `.notebooklm/profiles/<profile>/master_token.json`
+→ `chmod 600` → **只报大小和权限，绝不打印内容**。
+
+`.notebooklm/` 已在 `.gitignore`（`git check-ignore` 可验证）。
+
+### 2.3 验证
+
+```bash
+./scripts/doctor.sh --json
+```
+
+看 `auth_live`：它对应上游的双条件 ——
+`auth check --test --json` 要同时 `status=="ok"` **且** `checks.token_fetch==true`。
+
+---
+
+## 3. 路线 A：直连（等出网放开）
+
+需要 Arena 侧放行：`notebooklm.google.com` + Google 的 cookie/token 域名
+（`accounts.google.com`、`*.google.com`、`googleapis.com`、`oauth2.googleapis.com`）。
+
+放开后不用改任何代码 —— `doctor.sh` 的 `egress_google` 会自己转绿，然后：
+
+```bash
+python3 tools/nbjob.py execute jobs/pending/<id>.job.json
+```
+
+长任务用后台跑（Arena 的 `start_process` 就行）：
+
+```bash
+python3 tools/nbjob.py execute jobs/pending/<id>.job.json --result jobs/.local/<id>.result.json
+```
+
+---
+
+## 4. 路线 B：工单中继（现在就能跑通）
+
+```
+Arena Agent（沙箱）                       你的机器（有 Google 出网）
+  写 jobs/pending/<id>.job.json  ──push──▶  ./scripts/worker.sh watch
+  读 jobs/done/<id>.result.json  ◀──push──    └─ tools/nbjob.py execute
+```
+
+### Agent 侧
+
+```bash
+cp jobs/samples/report-demo.job.json jobs/pending/rpt-001.job.json
+python3 tools/nbjob.py validate jobs/pending/rpt-001.job.json
+python3 tools/nbjob.py plan     jobs/pending/rpt-001.job.json    # 自证命令序列
+git add jobs/pending && git commit -m "job: rpt-001" && git push
+```
+
+然后轮询（`api.github.com` 可达，所以 `gh` 能用）：
+
+```bash
+gh api repos/:owner/:repo/contents/jobs/done/rpt-001.result.json --jq '.download_url'
+```
+
+### Worker 侧（你的机器）
+
+```bash
+git clone https://github.com/sunccchengze/notEBooklm-scz && cd notEBooklm-scz
+git checkout arena/01a06208-notebooklm-scz
+./scripts/setup.sh
+./scripts/nb login                     # 本机有浏览器，直接登录最简单
+./scripts/doctor.sh                    # 应全绿
+./scripts/worker.sh watch              # 循环；或 once 配 cron
+```
+
+worker 每轮：`git pull` → 找 `jobs/pending/*.job.json` → 逐个 `execute` →
+结果写 `jobs/done/<id>.result.json` → 工单挪进 `jobs/running/`（**避免重复执行烧配额**）→
+`commit` + `push`。
+
+### 大文件
+
+mp3 / mp4 / pdf 不适合走 Git。当前只回传小产物（md / json / csv / png）。
+要回传大文件，让 worker 传 GitHub Release 再把下载链接写进结果 —— 尚未实现，见 §6。
+
+---
+
+## 5. 可选：项目级 MCP
+
+`.mcp.json` 已配好，指向 `scripts/agent-mcp` → `python -m notebooklm.mcp`。
+`agent-mcp` 在启动前会检查凭据是否存在，缺失就打印可读指引并 `exit 1`，
+而不是把 notebooklm-py 的长 traceback 甩给 Agent。
+
+> ⚠️ **未验证**：Arena 是否真的加载项目级 `.mcp.json`。本会话的工具列表里没有任何 MCP 工具，
+> 但"看不到"既可能是平台不支持，也可能是没配置 —— 这一点需要在 Arena 侧确认，
+> 不能当成已知事实。MCP 入口是**锦上添花**，不是必需：`tools/nbjob.py` 走 CLI，不依赖 MCP。
+
+MCP 侧默认注册 33 个工具（实测 fastmcp 3.4.2）：`chat_ask` / `source_add` / `source_wait` /
+`studio_generate` / `studio_status` / `studio_download` / `notebook_*` / `research_*` /
+`share_*` / `suggest_prompts` / `server_info` 等。
+
+---
+
+## 6. 还没做的
+
+- **大产物回传**（GitHub Release / Artifact 通道）
+- **除 `research_report` 之外的工单 kind**：播客、幻灯片、测验、思维导图。
+  骨架已经通用（`build_plan` 里加一个分支即可），但没写、没测，所以现在不声称支持。
+- **笔记本自动复用**：目前工单要么新建、要么显式给 id。按标题模糊匹配复用还没做。
+- **`awesome-notebookLM-prompts` 的 17 套幻灯片风格中文化**：素材已读过，还没落进仓库。
+
+---
+
+## 7. API 核对记录
+
+`examples/research_report.py` 用到的每个符号都对着**已安装的 0.8.1** 核对过，不是凭记忆写的：
+
+```
+ReportFormat: BLOG_POST / BRIEFING_DOC / CONCEPT_EXPLANATION / CUSTOM / STUDY_GUIDE
+NotebooksAPI.create(title) -> Notebook
+SourcesAPI.add_url(notebook_id, url, *, wait, wait_timeout, title) -> Source
+SourcesAPI.wait_all_until_ready(...) -> list[Source | SourceNotFoundError
+                                            | SourceProcessingError | SourceTimeoutError]
+ArtifactsAPI.generate_report(notebook_id, report_format, source_ids, language,
+                             custom_prompt, extra_instructions) -> GenerationStatus
+ArtifactsAPI.wait_for_completion(notebook_id, task_id, ..., timeout) -> GenerationStatus
+ArtifactsAPI.download_report(notebook_id, output_path, artifact_id) -> str
+ChatAPI.ask(notebook_id, question, source_ids, conversation_id) -> AskResult
+NotesAPI.create(notebook_id, title, content) -> Note
+```
+
+两个值得记的差异：
+
+1. `ReportFormat` 枚举里有 `CONCEPT_EXPLANATION`，但 **CLI 只暴露 4 种**
+   （`notebooklm generate report --help` 实测：`briefing-doc|study-guide|blog-post|custom`）。
+   所以 `tools/nbjob.py` 的校验集合是 4 个，跟 CLI 对齐，不跟枚举对齐。
+2. `wait_all_until_ready` 返回的是 `list[Source | 异常对象]`，**不是**清一色 `Source`。
+   直接当 Source 用会在失败来源上炸 —— 示例里显式分流了。
