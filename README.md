@@ -89,9 +89,10 @@ python3 tools/nbjob.py plan jobs/samples/report-demo.job.json
 `out/`。每一步的 id 都显式传给下一步（ID-pinned），失败会**立即停在那一步**，
 不会继续发起生成任务白烧配额。
 
-## 九种产物
+## 十种工单
 
-骨架完全一样，只是最后三步的命令形状不同（由 `tools/nbjob.py` 的 `KINDS` 表声明式描述）：
+九种产新产物，一种重试已失败的产物。骨架基本一样，只是最后三步的命令形状不同
+（由 `tools/nbjob.py` 的 `KINDS` 表声明式描述）：
 
 | kind | 产物 | 落盘 | 样例 |
 |---|---|---|---|
@@ -104,6 +105,10 @@ python3 tools/nbjob.py plan jobs/samples/report-demo.job.json
 | `infographic` | 信息图 | `.png` | `infographic-demo` |
 | `data_table` | 数据表 | `.csv` | `datatable-demo` |
 | `mind_map` | 思维导图 | `.json` | `mindmap-demo` |
+| `retry_artifact` | 原地重试失败产物 | 随原类型 | `retry-demo` |
+
+`retry_artifact` 是 `AGENTS.md`「失败时不要重跑 `generate`」那条规矩的工具化替代 ——
+它保留原 ARTIFACT_ID，不会造重复产物、不会白烧配额。
 
 样例都在 `jobs/samples/`。幻灯片还配了一套**中文化风格库**（`prompts/slides/`，6 种风格），
 素材来自 awesome-notebookLM-prompts，改写后对齐了 notebooklm-py 的真实接口 ——

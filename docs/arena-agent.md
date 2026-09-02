@@ -153,7 +153,7 @@ MCP 侧默认注册 33 个工具（实测 fastmcp 3.4.2）：`chat_ask` / `sourc
 
 ## 6. 还没做的
 
-- **真实 API 端到端**：九种工单都在 mock CLI 上验证过编排逻辑，但**没有**在真实
+- **真实 API 端到端**：十种工单都在 mock CLI 上验证过编排逻辑，但**没有**在真实
   NotebookLM 上跑通过 —— 沙箱打不通 Google。这是当前最大的未验证项。
 - **大产物回传的上传分支未实测**：`ship` 子命令已实现分流（小文本走 Git、
   二进制走 GitHub Release），但**上传那一段在沙箱内跑不通**，原因见下条。
@@ -232,6 +232,9 @@ NotesAPI.create(notebook_id, title, content) -> Note
 | `download quiz` | `--format [json\|markdown\|html]`（默认 json）、同上 |
 | `download flashcards` | `--format [json\|markdown\|html]`、同上 |
 | `download audio` / `video` / `infographic` / `data-table` / `mind-map` | `-a`、`-n`、`--latest/--earliest/--all`、`--name`（**都没有** `--format`） |
+| `artifact retry` | `ARTIFACT_ID`（位置参数，支持唯一前缀）、`-n`、`--wait/--no-wait`、`--timeout`、`--interval` |
+| `generate revise-slide` | `-a <slide deck id>`（**必填**）、`--slide <0-based 序号>`（**必填**）、`--prompt-file`、`-n`、`--wait/--no-wait` |
+| `generate cinematic-video` | `generate video --format cinematic` 的**别名**；`--format` 被锁死为 cinematic，传别的值直接报错 |
 
 由此定下来的实现决策（每条都对应 `KINDS` 表里的一个字段）：
 
@@ -252,14 +255,28 @@ NotesAPI.create(notebook_id, title, content) -> Note
    而 slide-deck / quiz / flashcards 有。
 7. **`--style-prompt` 只在 `--style custom` 下有意义** → 校验层直接拦，
    不让 Agent 写一个会被静默忽略的参数。
+8. **`artifact retry` 不带 `--wait` 时返回 `{task_id, status, url, error, error_code}`**
+   —— 源码 `cli/artifact_cmd.py:691` 核实（带 `--wait` 时键名换成 `artifact_id`）。
+   取 `task_id` 正好契合既有 capture 模式，所以 `retry_artifact` 不需要新的取值路径。
+9. **`cinematic-video` 不做成独立 kind**。它是 `generate video --format cinematic` 的别名，
+   用 `video` + `format: "cinematic"` 即可覆盖；做成独立 kind 只会多一个等价入口。
+10. **`revise-slide` 不做成 kind**。它要求 `-a <已生成的 slide deck id> --slide <序号>`，
+    是对已有产物的**局部编辑**而非新产物，和「建本→加料→生成→下载」的骨架不兼容。
+    将来若要支持，应该是第三种动作类型（局部修改），不是第十一种产物。
 
 复现核对：
 
 ```bash
-for c in report audio slide-deck quiz flashcards video infographic data-table mind-map; do
-  echo "=== generate $c ==="; .venv/bin/notebooklm generate $c --help | grep -E '^  --'
+for c in report audio slide-deck quiz flashcards video infographic data-table mind-map \
+         revise-slide cinematic-video; do
+  echo "=== generate $c ==="; .venv/bin/notebooklm generate $c --help | grep -E '^  --|^  -'
 done
 for c in audio video slide-deck quiz flashcards infographic data-table mind-map; do
   echo "=== download $c ==="; .venv/bin/notebooklm download $c --help | sed -n '/^Options/,$p' | grep -E '^  -'
 done
+echo "=== artifact retry ==="; .venv/bin/notebooklm artifact retry --help
+
+# retry 的 JSON 键名（task_id vs artifact_id）从源码核，不看 --help：
+grep -n 'json_output_response' -A 8 \
+  ~/notebooklm-py/src/notebooklm/cli/artifact_cmd.py | sed -n '/task_id/,/}/p'
 ```

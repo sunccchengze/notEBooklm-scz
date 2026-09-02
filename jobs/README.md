@@ -14,7 +14,9 @@
 | `jobs/done/*.result.json` | 执行结果（成功失败都写） | worker |
 | `jobs/.local/` | 本地直跑的结果，**已 gitignore** | 你 |
 
-## 九种 kind
+## 十种 kind
+
+九种产新产物 + 一种重试：
 
 | kind | 产物 | 落盘 | 典型耗时 | 样例 |
 |---|---|---|---|---|
@@ -27,19 +29,49 @@
 | `infographic` | 信息图 | `.png` | 5–15 min | `infographic-demo` |
 | `data_table` | 数据表 | `.csv` | 5–15 min | `datatable-demo` |
 | `mind_map` | 思维导图 | `.json` | 同步返回 | `mindmap-demo` |
+| `retry_artifact` | 原地重试失败产物 | 随原类型 | 视原类型 | `retry-demo` |
 
-九种共用同一条骨架：**建（或复用）笔记本 → 加来源 → 各自等索引 → 可选提问 →
+九种产物共用同一条骨架：**建（或复用）笔记本 → 加来源 → 各自等索引 → 可选提问 →
 生成 → 等完成 → 下载**。差别只在最后三步的命令形状，由 `KINDS` 表声明式描述。
 
-`mind_map` 是唯一的例外：它**同步返回** `{mind_map, note_id, kind}`，没有 `task_id`，
-所以没有「等生成」这一步（步数 5 而不是 6），下载用的 id 取自 `note_id`。
+两个例外：
+
+- `mind_map` **同步返回** `{mind_map, note_id, kind}`，没有 `task_id`，
+  所以没有「等生成」这一步（步数 5 而不是 6），下载用的 id 取自 `note_id`。
+- `retry_artifact` 骨架完全不同（**无来源、无提问**，共 4 步）：
+  复用笔记本 → `artifact retry` → 等 → 下载。见下面专节。
+
+### `retry_artifact` —— 失败产物的正确重试方式
+
+`AGENTS.md` 写了「任务失败时不要重试 `generate` —— 那会创建重复产物、白烧配额」。
+这条 kind 就是那条规矩的工具化替代：`artifact retry` **原地重跑**，
+ARTIFACT_ID 不变，`poll` / `wait` 继续对它有效。
+
+```jsonc
+{ "id": "rty-20260902-001",
+  "kind": "retry_artifact",
+  "notebook": { "id": "nb_xxx" },        // **必须给 id**，重试不能新建笔记本
+  "generate": {
+    "artifact_id": "abc123",             // 必填；支持唯一前缀
+    "artifact_kind": "podcast"           // 必填；决定重试后按哪种产物下载
+  } }
+```
+
+约束（校验会逐条拦）：必须有 `notebook.id`；**不接受** `sources` 和 `ask`
+（重试沿用原产物的资料，也不做问答）；`artifact_kind` 必须是九种产物之一。
+
+> 上游还有一个 `generate revise-slide`（改单页幻灯片），但它要求 `-a <已生成的
+> slide deck id> --slide <0-based 序号>`，属于对已有产物的**局部编辑**而非新产物，
+> 目前没做成工单 kind。`generate cinematic-video` 则是 `generate video
+> --format cinematic` 的别名 —— 用 `video` + `format: "cinematic"` 即可覆盖，
+> 不需要单独的 kind（需 Google AI Ultra）。
 
 ## 通用字段
 
 ```jsonc
 {
   "id": "rpt-20260902-001",        // 必填，结果靠它对账
-  "kind": "research_report",       // 九种，见下表
+  "kind": "research_report",       // 十种，见下表
 
   "notebook": {
     "title": "调研：xxx",           // 只给 title：先查精确同名的，命中就复用，没命中才建

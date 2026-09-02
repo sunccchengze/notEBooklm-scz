@@ -174,6 +174,20 @@ KINDS: dict[str, dict[str, Any]] = {
         "capture_task": "note_id",          # 返回 {mind_map, note_id, kind}，没有 task_id
         "skip_wait": True,
     },
+    # 不是新产物，而是对**已失败**产物的原地重试。
+    # AGENTS.md 明确写了「任务失败时不要重试 generate —— 那会创建重复产物、白烧配额」，
+    # 这条 kind 就是那条规矩的工具化替代：ARTIFACT_ID 不变，poll/wait 继续对它有效。
+    "retry_artifact": {
+        "gen": ["artifact", "retry"],
+        "wait": TIMEOUTS["audio_wait"],     # 重试的可能是任何产物，取最长常见值
+        "download": [],                     # 由 generate.artifact_kind 对应的 spec 决定
+        "ext": "bin",
+        "options": {},
+        "prompt_mode": "none",
+        "needs_sources_for_gen": False,
+        "has_language": False,
+        "is_retry": True,                   # 无来源、无提问、要 notebook.id 和 artifact_id
+    },
 }
 
 
@@ -199,6 +213,24 @@ def validate(job: dict[str, Any]) -> None:
 
     nb = job.get("notebook") or {}
     _need(isinstance(nb, dict), "notebook 必须是 object")
+
+    # retry_artifact 是对已有产物的原地重试：必须有 notebook.id，且不接受来源/提问
+    if spec.get("is_retry"):
+        opts = job.get("generate") or {}
+        _need(bool(nb.get("id")),
+              "retry_artifact 必须给 notebook.id（重试的是已有笔记本里的产物，不能新建）")
+        _need(isinstance(opts.get("artifact_id"), str) and opts["artifact_id"].strip(),
+              "retry_artifact 必须给 generate.artifact_id（要重试哪个产物）")
+        ak = opts.get("artifact_kind")
+        _need(ak in KINDS and not KINDS[ak].get("is_retry"),
+              f"generate.artifact_kind 必须是 {sorted(k for k in KINDS if k != 'retry_artifact')} "
+              f"之一（决定重试后按哪种产物下载），收到 {ak!r}")
+        _need(not (job.get("sources") or []),
+              "retry_artifact 不接受 sources —— 重试沿用原产物的资料，不会新增")
+        _need(not (job.get("ask") or []),
+              "retry_artifact 不接受 ask —— 它只重试产物，不做问答")
+        return
+
     _need(bool(nb.get("title")) or bool(nb.get("id")),
           "notebook.title 和 notebook.id 至少要给一个（给 id 表示复用已有笔记本）")
 
@@ -309,6 +341,28 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
             capture="notebook_id", jq_path="notebook.id", handler="resolve_notebook",
         ))
 
+    # retry_artifact：没有来源、没有提问，直接原地重试 → 等 → 下载。
+    # 单独成一条路径，因为它的骨架和其余九种差别太大，硬塞进共用流程会全是分支。
+    if KINDS[job["kind"]].get("is_retry"):
+        opts = job.get("generate") or {}
+        aid = opts["artifact_id"]
+        aspec = KINDS[opts["artifact_kind"]]
+        # artifact retry 不带 --wait 时返回 {task_id, status, url, error, error_code}
+        # —— 源码 cli/artifact_cmd.py:691 核实，task_id 正好契合既有 capture 模式
+        steps.append(Step(
+            label=f"原地重试产物 {aid}（不新建，ARTIFACT_ID 不变）",
+            argv=_nb("artifact", "retry", aid, "-n", "{notebook_id}", "--json"),
+            capture="task_id", jq_path="task_id", needs=["notebook_id"],
+        ))
+        steps.append(Step(
+            label=f"等待重试后的 {opts['artifact_kind']} 完成",
+            argv=_nb("artifact", "wait", "{task_id}", "-n", "{notebook_id}",
+                     "--timeout", str(TIMEOUTS["audio_wait"])),
+            ok_codes=(0, 2), needs=["notebook_id", "task_id"],
+        ))
+        steps.append(_download_step(job, opts["artifact_kind"], aspec))
+        return steps
+
     # 2) 加资料（每条一个 source_id）
     for i, s in enumerate(job.get("sources") or []):
         steps.append(Step(
@@ -414,24 +468,30 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
         ))
 
     # 7) 下载
+    steps.append(_download_step(job, job["kind"], spec))
+    return steps
+
+
+def _download_step(job: dict[str, Any], label_kind: str,
+                   spec: dict[str, Any]) -> Step:
+    """拼下载命令。普通 kind 和 retry_artifact 共用 —— 两者的下载形状是一样的，
+    只有 spec 来源不同（后者取 generate.artifact_kind 对应的 spec）。"""
     dl = job.get("download") or {}
     outdir = Path((job.get("output") or {}).get("dir", "out"))
     ext = dl.get("format", spec["options"].get("download_format", {}).get("default", spec["ext"]))
     # `download quiz/flashcards --format markdown` 是 CLI 的取值名，不是文件扩展名
     if ext == "markdown":
         ext = "md"
-    outfile = str(outdir / f"{job['id']}-{job['kind']}.{ext}")
+    outfile = str(outdir / f"{job['id']}-{label_kind}.{ext}")
     dlcmd = list(spec["download"]) + [outfile]
     if "download_format" in spec["options"]:
         dlcmd += ["--format", dl.get("format", spec["options"]["download_format"]["default"])]
     dlcmd += ["-a", "{task_id}", "-n", "{notebook_id}"]
-    steps.append(Step(
-        label=f"下载 {job['kind']} → {outfile}",
+    return Step(
+        label=f"下载 {label_kind} → {outfile}",
         argv=_nb(*dlcmd), capture="artifact_file", needs=["notebook_id", "task_id"],
         artifact_path=outfile,
-    ))
-
-    return steps
+    )
 
 
 def render_plan(steps: list[Step]) -> str:

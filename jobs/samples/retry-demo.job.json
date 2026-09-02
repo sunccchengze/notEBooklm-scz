@@ -1,0 +1,10 @@
+{
+  "id": "rty-demo-0001",
+  "kind": "retry_artifact",
+  "notebook": { "id": "nb_请把这里换成真实笔记本 id" },
+  "generate": {
+    "artifact_id": "abc123",
+    "artifact_kind": "podcast"
+  },
+  "output": { "dir": "out" }
+}
