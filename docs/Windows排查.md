@@ -167,3 +167,62 @@ Get-ChildItem scripts\*.ps1 | ForEach-Object {
 winget install Microsoft.PowerShell
 ```
 之后用 `pwsh` 而不是 `powershell` 启动。
+
+---
+
+## 登录后警告 `Missing required cookies: __Secure-1PSIDTS`
+
+**这多半不是真故障。** `__Secure-1PSIDTS` 是 `__Secure-1PSID` 的「新鲜度伙伴」cookie，
+Google 按自己的节奏下发，浏览器登录瞬间可能还没写入。
+
+notebooklm-py 内置了自愈：每次 `fetch_tokens` 都会顺带向
+`accounts.google.com/RotateCookies` 发一次请求补上它。所以**直接跑下一条命令通常就好了**：
+
+```powershell
+.\scripts\nb.ps1 auth check --test
+.\scripts\nb.ps1 list
+```
+
+看到 `status: ok` 就没事，前面的警告可以忽略。
+
+### 如果 auth check 仍然失败
+
+按顺序试：
+
+```powershell
+# 1. 主动刷新
+.\scripts\nb.ps1 auth refresh
+
+# 2. 允许无头浏览器重新认证（会复用已保存的浏览器 profile）
+.\scripts\nb.ps1 auth refresh --allow-headless
+
+# 3. 全面体检
+.\scripts\nb.ps1 doctor
+```
+
+### 还不行就重新登录
+
+在浏览器窗口里，登录完成后**多停留几秒再关窗口**，给 Google 时间下发完整 cookie：
+
+```powershell
+.\scripts\nb.ps1 auth logout
+.\scripts\nb.ps1 login
+```
+
+### 多个 Google 账号
+
+登录时明确指定账号，避免路由到错误的 authuser：
+
+```powershell
+.\scripts\nb.ps1 login --browser-cookies edge --account you@gmail.com
+```
+
+### 需要长期无人值守
+
+配置计划任务每 15-20 分钟刷新一次，或者改用 master token 方案：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install "notebooklm-py[headless]"
+.\scripts\nb.ps1 login --master-token --account you@gmail.com
+```
+master token 能在 cookie 完全过期后自动重新签发，无需浏览器。
