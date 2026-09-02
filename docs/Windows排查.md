@@ -226,3 +226,30 @@ notebooklm-py 内置了自愈：每次 `fetch_tokens` 都会顺带向
 .\scripts\nb.ps1 login --master-token --account you@gmail.com
 ```
 master token 能在 cookie 完全过期后自动重新签发，无需浏览器。
+
+---
+
+## `use` 报错 `No notebook found starting with '标题'`
+
+`use` 只接受**笔记本 ID 的前缀**，不支持按标题匹配。
+
+```powershell
+# ❌ 不行
+.\scripts\nb.ps1 use 测试
+
+# ✅ 用 ID 前缀（几位就够）
+.\scripts\nb.ps1 use a60e4c53
+
+# ✅ 更省事：创建时直接加 --use
+.\scripts\nb.ps1 create "测试" --use
+```
+
+想按标题查 ID：
+```powershell
+.\scripts\nb.ps1 list | Select-String "测试"
+```
+
+也可以用 `-n` 给单条命令临时指定，不改全局上下文：
+```powershell
+.\scripts\nb.ps1 ask "总结一下" -n a60e4c53
+```
