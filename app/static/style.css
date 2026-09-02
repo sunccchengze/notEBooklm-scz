@@ -642,8 +642,22 @@ h1, h2, h3 {
 .nb:hover .nb-ops, .item:hover .nb-ops { opacity: 1; }
 .nb-ops .x { padding: 3px 5px; font-size: 12px; }
 
-.mini.danger { color: var(--error); margin-left: 8px; }
-.mini.danger:hover { background: var(--error); color: #fff; border-color: var(--error); }
+/* 危险操作：平时低调的描边，hover 才转成实心红。
+   注意要盖过 .add-row button 的珊瑚底色 —— 那会导致
+   珊瑚底配深红字，几乎看不清。 */
+.mini.danger,
+.add-row .mini.danger {
+  color: var(--muted);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  margin-left: 8px;
+}
+.mini.danger:hover,
+.add-row .mini.danger:hover {
+  background: var(--error);
+  color: var(--on-dark);
+  border-color: var(--error);
+}
 
 /* 标签 */
 .sec-head { display: flex; align-items: center; justify-content: space-between; }
