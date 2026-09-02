@@ -468,9 +468,9 @@ def _research_error_cn(exc: Exception) -> str:
     text = f"{name}: {exc}".lower()
 
     if "not_found" in text or "找不到这个研究任务" in str(exc):
-        return ("Google 把这个深度研究任务丢弃了。深度模式走的是它家另一条"
-                "接口（DiscoverSourcesAsync），目前并非所有账号都稳定可用。"
-                "「快速」模式走的是另一条链路，通常没问题，建议改用它。")
+        return ("Google 把这个深度研究任务丢弃了。深度研究本身是可用的"
+                "（官方实测约 6 分钟完成），偶发丢任务多半是它那边的临时故障，"
+                "直接重试一次通常就好。")
     if "no_research" in text or "始终没有认领" in str(exc):
         return ("Google 一直没有认领这次研究。通常是深度模式排队失败，"
                 "建议换个说法重试，或先用「快速」模式拿结果。")
@@ -505,6 +505,7 @@ async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
     interval = 5.0
     last_status = ""
     misses = 0
+    pinned: str | None = None   # 线上真实 task_id，首次轮询后锁定
 
     while True:
         elapsed = loop_.time() - start_at
@@ -516,19 +517,30 @@ async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
 
         task = None
         try:
-            # 先精确匹配
-            task = await client.research.poll(notebook_id, tid)
+            # 官方 issue #886 记录的正确协议：
+            #   首次用 task_id=None 轮询（只有一个任务在飞时无歧义），
+            #   从返回值里拿到「线上真实的」task_id，之后再 pin 住它。
+            # start() 返回的 id 与轮询用的 id 不是一回事，
+            # 直接拿它去 pin 会一个都匹配不上，一路空转到超时。
+            task = await client.research.poll(notebook_id, pinned)
         except Exception:
-            task = None
-
-        if task is None or not getattr(task, "task_id", ""):
-            # 匹配不到就看整个笔记本：只有一个在飞任务时直接认领它
-            try:
-                any_task = await client.research.poll(notebook_id)
-                if any_task is not None and getattr(any_task, "task_id", ""):
-                    task = any_task
-            except Exception:
+            # 多任务并发时 pinned=None 会抛 AmbiguousResearchTaskError，
+            # 退回用 start() 的 id 再试一次
+            if pinned is None:
+                try:
+                    task = await client.research.poll(notebook_id, tid)
+                except Exception:
+                    task = None
+            else:
                 task = None
+
+        # 首次拿到真实 id 后就锁定，避免中途别的研究串台
+        # （#886 明确说明不 pin 会导致 provenance 错乱）
+        if pinned is None and task is not None:
+            wire_id = getattr(task, "task_id", "") or ""
+            if wire_id:
+                pinned = wire_id
+                _RESEARCH[tid]["wire_task_id"] = wire_id
 
         if task is not None:
             st = getattr(getattr(task, "status", None), "value", "") or ""
@@ -551,7 +563,9 @@ async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
             # 卡在 no_research 说明 Google 压根没认领。
             # 正常情况几十秒内就会转成 in_progress，
             # 超过 5 分钟还是这个状态就没必要继续等了。
-            if st == "no_research" and elapsed > 300:
+            # 官方实测深度研究 358-374 秒完成，所以 no_research 阶段
+            # 给足 3 分钟；真正启动后会转成 in_progress，那时不受此限。
+            if st == "no_research" and elapsed > 180:
                 raise RuntimeError(
                     f"等了 {int(elapsed / 60)} 分钟，Google 始终没有认领这个任务"
                     "（状态一直是 no_research）"
@@ -698,19 +712,37 @@ async def api_research_import(body: ImportBody) -> dict[str, Any]:
     except Exception:
         before = set()
 
-    reported = await client.research.import_sources(body.notebook_id, body.task_id, objs)
+    # 导入也要用线上真实 task_id：SDK 会校验 provenance
+    # （每个 ResearchSource 的 research_task_id 必须与之匹配），
+    # 用 start() 那个 id 会被判定为跨任务而拒收。
+    wire = cached.get("wire_task_id") or body.task_id
+    # 优先用官方的带校验版本：内建指数退避重试与去重，
+    # 正是上游为 #315「导入后卡在 Add sources 模态框」做的修复。
+    # 我原来手写的轮询比它粗糙，且不处理 FAILED_PRECONDITION（#2187）。
+    try:
+        reported = await client.research.import_sources_with_verification(
+            body.notebook_id, wire, objs, max_elapsed=300,
+        )
+    except Exception:
+        # 带校验版本失败时退回基础版，至少把请求发出去
+        try:
+            reported = await client.research.import_sources(body.notebook_id, wire, objs)
+        except Exception as e:
+            raise HTTPException(502, _err_cn(e)) from e
 
-    # 导入是异步的，等 Google 那边真正落库
+    # 再用资料数差值核实一次：官方文档明说返回值可能少报
     added: set[str] = set()
     for _ in range(12):
-        await asyncio.sleep(2.5)
         try:
-            now = {getattr(s, "id", "") for s in await client.sources.list(body.notebook_id)}
+            now = {getattr(s, "id", "") for s in
+                   (await client.sources.list(body.notebook_id) or [])}
         except Exception:
+            await asyncio.sleep(2.5)
             continue
         added = now - before
         if len(added) >= len(objs):
             break
+        await asyncio.sleep(2.5)
 
     count = len(added) or len(reported or [])
     return {

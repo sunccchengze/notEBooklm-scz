@@ -836,10 +836,13 @@ async function cancelResearch() {
 let DEEP_FAILS = 0;
 
 function errBlock(msg, detail) {
+  // 上游实测深度研究约 6 分钟可完成，所以不能断言「账号没开放」，
+  // 连续失败更可能是 Google 侧临时不稳。
   const hint = (RMODE === "deep" && DEEP_FAILS >= 2)
     ? `<p class="hint" style="margin-top:10px">
-         深度模式已经连续失败 ${DEEP_FAILS} 次，基本可以确定是 Google 侧
-         没给这个账号开放。建议就用快速模式。</p>`
+         深度模式已连续失败 ${DEEP_FAILS} 次。它正常需要 6 分钟左右，
+         这种情况多半是 Google 侧临时不稳，可以隔一会儿再试，
+         或先用快速模式拿结果。</p>`
     : "";
   return `<div class="err-box">
       <div class="err-head">
