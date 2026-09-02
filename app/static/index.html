@@ -128,9 +128,7 @@
     <!-- 研究 -->
     <section class="tabpage" id="page-research">
       <p class="sec-label">联网研究</p>
-      <p style="font-size:14px;color:var(--muted);margin:0 0 12px;line-height:1.55">
-        让 Gemini 自动上网搜集资料，挑选后一键导入这个笔记本。
-      </p>
+      <p class="hint">让 Gemini 自动上网搜集资料，挑选后一键导入这个笔记本。</p>
       <div class="seg">
         <button class="on" id="mode-fast" onclick="setMode('fast')">快速</button>
         <button id="mode-deep" onclick="setMode('deep')">深度</button>
@@ -157,6 +155,7 @@
     <h3 id="dlgTitle">标题</h3>
     <p id="dlgDesc"></p>
     <input id="dlgInput">
+    <textarea id="dlgArea" style="display:none"></textarea>
     <div class="dialog-actions">
       <button class="no" onclick="closeDialog()">取消</button>
       <button class="ok" onclick="confirmDialog()">确定</button>
@@ -166,6 +165,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

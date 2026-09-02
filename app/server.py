@@ -314,18 +314,30 @@ async def api_ask(body: AskBody) -> dict[str, Any]:
             }
             for x in (r.references or [])[:30]
         ],
-        "next_steps": [getattr(s, "text", str(s)) for s in (r.next_steps or [])][:4],
+        "next_steps": [
+            q for q in
+            ((getattr(s, "question", "") or "").strip() for s in (r.next_steps or []))
+            if q
+        ][:4],
     }
 
 
 @app.get("/api/suggest/{notebook_id}")
-async def api_suggest(notebook_id: str) -> list[str]:
+async def api_suggest(notebook_id: str) -> list[dict[str, str]]:
+    """AI 推荐的起始问题。PromptSuggestion 只有 title / prompt 两个字段。"""
     client = await get_client()
     try:
-        return [getattr(p, "text", str(p)) for p in
-                await client.notebooks.suggest_prompts(notebook_id)][:4]
+        items = await client.notebooks.suggest_prompts(notebook_id)
     except Exception:
         return []
+    out = []
+    for p in items[:4]:
+        title = (getattr(p, "title", "") or "").strip()
+        prompt = (getattr(p, "prompt", "") or "").strip()
+        if not prompt:
+            continue
+        out.append({"title": title or prompt[:18], "prompt": prompt})
+    return out
 
 
 @app.get("/api/history/{notebook_id}")

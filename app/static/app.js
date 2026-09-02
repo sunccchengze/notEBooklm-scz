@@ -1,9 +1,14 @@
+import { smooth } from "/static/smooth.js";
+
 let NBS = [];
 let CUR = null;
 let CONV = null;
 let BUSY = false;
 let RMODE = "fast";
 let RTASK = null;
+
+let scChat = null, scNb = null;
+const scPages = {};
 
 const $ = (id) => document.getElementById(id);
 
@@ -40,15 +45,23 @@ const fmt = (s) =>
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
 
-// 弹层（替代原生 prompt，保持设计一致）
+/** 单行化：把换行折成空格，用于按钮副标题 */
+const oneline = (s) => String(s ?? "").replace(/\s*\n\s*/g, " ").trim();
+
+// ---------------------------------------------------------------- 弹层
+
 let dlgResolve = null;
-function dialog(title, desc, placeholder) {
+function dialog(title, desc, placeholder, multiline) {
   $("dlgTitle").textContent = title;
   $("dlgDesc").textContent = desc || "";
-  $("dlgInput").value = "";
-  $("dlgInput").placeholder = placeholder || "";
+  const single = $("dlgInput"), multi = $("dlgArea");
+  single.style.display = multiline ? "none" : "";
+  multi.style.display = multiline ? "" : "none";
+  const field = multiline ? multi : single;
+  field.value = "";
+  field.placeholder = placeholder || "";
   $("mask").classList.add("show");
-  setTimeout(() => $("dlgInput").focus(), 50);
+  setTimeout(() => field.focus(), 60);
   return new Promise((res) => (dlgResolve = res));
 }
 function closeDialog() {
@@ -56,12 +69,17 @@ function closeDialog() {
   if (dlgResolve) { dlgResolve(null); dlgResolve = null; }
 }
 function confirmDialog() {
-  const v = $("dlgInput").value.trim();
+  const multi = $("dlgArea").style.display !== "none";
+  const v = (multi ? $("dlgArea").value : $("dlgInput").value).trim();
   $("mask").classList.remove("show");
   if (dlgResolve) { dlgResolve(v || null); dlgResolve = null; }
 }
 $("dlgInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") confirmDialog();
+  if (e.key === "Escape") closeDialog();
+});
+$("dlgArea").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) confirmDialog();
   if (e.key === "Escape") closeDialog();
 });
 
@@ -70,6 +88,12 @@ const SPIKE = '<svg><use href="#spike"/></svg>';
 // ---------------------------------------------------------------- 启动
 
 async function boot() {
+  scChat = smooth($("chat"));
+  scNb = smooth($("nbList"));
+  ["sources", "studio", "research", "notes"].forEach((t) => {
+    scPages[t] = smooth($("page-" + t));
+  });
+
   try {
     const a = await api("/api/auth");
     $("account").textContent = a.ok ? a.email : "未登录";
@@ -104,6 +128,7 @@ function renderNotebooks() {
           <div class="nb-meta">${n.sources} 个资料 · ${esc(n.created)}</div>
         </div></div>`).join("")
     : '<div class="empty">没有匹配的笔记本</div>';
+  scNb?.sync();
 }
 
 // ---------------------------------------------------------------- 选择
@@ -119,6 +144,7 @@ async function pick(id) {
       <h2>${esc(CUR.title)}</h2>
       <p>问点什么，回答会基于这个笔记本里的资料。</p>
     </div>`;
+  scChat?.sync();
   $("input").disabled = false;
   $("sendBtn").disabled = false;
   $("input").focus();
@@ -130,19 +156,32 @@ async function pick(id) {
   loadSuggest();
 }
 
+/** 推荐问题：后端现在返回 {title, prompt}，渲染成两行卡片 */
 async function loadSuggest() {
   $("suggest").innerHTML = "";
   if (!CUR) return;
   try {
     const s = await api(`/api/suggest/${CUR.id}`);
-    $("suggest").innerHTML = s
-      .map((t) => `<button onclick='quickAsk(${JSON.stringify(t)})'>${esc(t)}</button>`)
-      .join("");
+    renderSuggest(s);
   } catch {}
 }
 
-function quickAsk(t) {
-  $("input").value = t;
+function renderSuggest(items) {
+  if (!items?.length) { $("suggest").innerHTML = ""; return; }
+  $("suggest").innerHTML = items.map((x, i) => {
+    const title = typeof x === "string" ? x : (x.title || "");
+    const prompt = typeof x === "string" ? x : (x.prompt || "");
+    const sub = oneline(prompt);
+    const showSub = sub && sub !== title;
+    return `<button class="sg" data-p="${esc(prompt)}" onclick="useSuggest(this)">
+        <div class="sg-t">${esc(title)}</div>
+        ${showSub ? `<div class="sg-p" title="${esc(sub)}">${esc(sub)}</div>` : ""}
+      </button>`;
+  }).join("");
+}
+
+function useSuggest(btn) {
+  $("input").value = btn.dataset.p || "";
   send();
 }
 
@@ -168,8 +207,14 @@ function addMsg(who, html) {
       <div class="text">${html}</div>
     </div>`;
   w.appendChild(d);
-  w.scrollTop = w.scrollHeight;
+  scrollChat();
   return d;
+}
+
+function scrollChat() {
+  const w = $("chat");
+  if (scChat) scChat.toBottom();
+  else w.scrollTop = w.scrollHeight;
 }
 
 async function send() {
@@ -206,10 +251,9 @@ async function send() {
     p.dataset.raw = r.answer;
     p.dataset.q = q;
 
+    // 追问：后端返回纯字符串数组
     if (r.next_steps?.length) {
-      $("suggest").innerHTML = r.next_steps
-        .map((t) => `<button onclick='quickAsk(${JSON.stringify(t)})'>${esc(t)}</button>`)
-        .join("");
+      renderSuggest(r.next_steps.map((t) => ({ title: t, prompt: t })));
     }
   } catch (e) {
     p.querySelector(".text").innerHTML =
@@ -217,7 +261,7 @@ async function send() {
   } finally {
     BUSY = false;
     $("sendBtn").disabled = false;
-    $("chat").scrollTop = $("chat").scrollHeight;
+    scrollChat();
   }
 }
 
@@ -278,6 +322,7 @@ async function loadSources() {
           <button class="x" onclick="delSource('${x.id}')" title="删除">✕</button>
         </div>`).join("")
       : '<div class="empty">还没有资料</div>';
+    scPages.sources?.sync();
     if (s.some((x) => x.status === "processing")) setTimeout(loadSources, 4000);
   } catch (e) {
     $("srcList").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
@@ -318,13 +363,13 @@ async function addFile(input) {
 
 async function addTextPrompt() {
   if (!CUR) return toast("请先选择笔记本", true);
-  const c = await dialog("粘贴文字", "把内容作为一份资料加入", "粘贴到这里");
+  const c = await dialog("粘贴文字", "把内容作为一份资料加入（Ctrl+Enter 确定）", "粘贴到这里", true);
   if (!c) return;
   try {
     await api("/api/sources/text", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notebook_id: CUR.id, title: c.slice(0, 30), content: c }),
+      body: JSON.stringify({ notebook_id: CUR.id, title: oneline(c).slice(0, 30), content: c }),
     });
     toast("已添加");
     loadSources();
@@ -348,11 +393,12 @@ async function loadNotes() {
     $("noteList").innerHTML = n.length
       ? n.map((x) => `<div class="item"><div class="item-body">
             <div class="item-title">${esc(x.title)}</div>
-            <div class="item-sub">${esc((x.content || "").slice(0, 70))}</div>
+            <div class="item-sub">${esc(oneline(x.content).slice(0, 70))}</div>
           </div>
           <button class="x" onclick="delNote('${x.id}')" title="删除">✕</button>
         </div>`).join("")
       : '<div class="empty">还没有笔记<br>在回答下方点「存为笔记」</div>';
+    scPages.notes?.sync();
   } catch (e) {
     $("noteList").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
@@ -409,8 +455,8 @@ async function pollResearch(tid) {
         return;
       }
       $("rResult").innerHTML =
-        `<p class="sec-label">找到 ${list.length} 个来源</p>` +
-        list.map((x, i) => `<label class="rsrc">
+        `<p class="sec-label" style="margin-top:16px">找到 ${list.length} 个来源</p>` +
+        list.map((x) => `<label class="rsrc">
             <input type="checkbox" checked value="${esc(x.url)}">
             <div style="min-width:0">
               <div class="rsrc-t">${esc(x.title || "无标题")}</div>
@@ -419,6 +465,7 @@ async function pollResearch(tid) {
         `<div class="add-row" style="margin-top:12px">
            <button style="flex:1" onclick="importResearch()">导入选中的来源</button>
          </div>`;
+      scPages.research?.sync();
       return;
     }
     if (s.state === "error") {
@@ -513,9 +560,18 @@ function switchTab(name) {
     $("tab-" + t).classList.toggle("active", t === name);
     $("page-" + t).classList.toggle("active", t === name);
   });
+  scPages[name]?.sync();
 }
 
 $("urlInput").addEventListener("keydown", (e) => { if (e.key === "Enter") addUrl(); });
 $("rqInput").addEventListener("keydown", (e) => { if (e.key === "Enter") startResearch(); });
+
+// 暴露给 HTML 内联事件
+Object.assign(window, {
+  pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
+  addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
+  setMode, startResearch, importResearch, gen, openFolder,
+  togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
+});
 
 boot();
