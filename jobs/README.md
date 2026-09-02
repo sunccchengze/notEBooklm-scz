@@ -39,11 +39,12 @@
 ```jsonc
 {
   "id": "rpt-20260902-001",        // 必填，结果靠它对账
-  "kind": "research_report",       // research_report | podcast | slides | quiz
+  "kind": "research_report",       // 九种，见下表
 
   "notebook": {
-    "title": "调研：xxx",           // title 和 id 至少给一个
-    "id": null                      // 给 id = 复用已有笔记本（优先！别动不动新建）
+    "title": "调研：xxx",           // 只给 title：先查精确同名的，命中就复用，没命中才建
+    "id": null,                     // 给 id = 直接用，不发任何查询
+    "reuse": true                   // false = 跳过复用检查，强制新建
   },
 
   "sources": [                      // 必填，非空；Standard 档上限 50 条
@@ -58,7 +59,7 @@
   ],
 
   "generate": { /* 见下，按 kind 不同 */ },
-  "download": { "format": "…" },    // 仅 slides / quiz 有
+  "download": { "format": "…" },    // 仅 slides / quiz / flashcards 有；其余产物无此参数
   "output":   { "dir": "out" },
   "policy":   { "confirm_destructive": true }
 }

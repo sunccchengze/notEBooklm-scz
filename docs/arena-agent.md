@@ -157,8 +157,8 @@ MCP 侧默认注册 33 个工具（实测 fastmcp 3.4.2）：`chat_ask` / `sourc
   NotebookLM 上跑通过 —— 沙箱打不通 Google。这是当前最大的未验证项。
 - **大产物回传**（GitHub Release / Artifact 通道）—— mp3 / mp4 / pptx / mp4 不适合走 Git，
   目前只回传小文件（md / json / csv / png）。
-- **笔记本自动复用**：目前工单要么新建、要么显式给 id。按标题模糊匹配复用还没做
-  —— 而 `AGENTS.md` 恰恰要求「优先复用已有笔记本」，所以这是个真实的缺口。
+- **笔记本按标题「模糊」匹配**：现在只做**精确**同名匹配（`list --json` 后逐条比对
+  去首尾空格的 title），命中即复用。近似匹配、跨账号去重还没做。
 - **`cinematic-video` 别名、`revise-slide` 单页改写、`artifact retry`** 还没做成工单动作。
 
 ---

@@ -271,6 +271,10 @@ class Step:
     jq_path: str | None = None          # 从 stdout JSON 取哪个字段
     ok_codes: tuple[int, ...] = (0,)
     needs: list[str] = field(default_factory=list)   # 依赖的前置 capture 键
+    # 条件步骤：argv 是「探测」命令，argv2 是「探测未命中时的回退」命令，
+    # 具体判定逻辑由 execute() 里同名的 handler 负责。目前只有 resolve_notebook。
+    handler: str | None = None
+    argv2: list[str] = field(default_factory=list)
 
 
 def _nb(*args: str) -> list[str]:
@@ -284,15 +288,22 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
     nb = job.get("notebook") or {}
     steps: list[Step] = []
 
-    # 1) 笔记本：复用已有 or 新建
+    # 1) 笔记本：显式 id → 直接用；只给标题 → 先查同名的，查不到才建
+    #    （AGENTS.md 要求「优先复用已有笔记本」—— 配额有限，别动不动新建）
     if nb.get("id"):
-        # 复用：只登记，不发命令（id 已知）
         steps.append(Step(label=f"复用笔记本 {nb['id']}", argv=[], capture="notebook_id"))
-    else:
+    elif nb.get("reuse") is False:
         steps.append(Step(
-            label=f"创建笔记本「{nb['title']}」",
+            label=f"创建笔记本「{nb['title']}」（reuse=false，跳过复用检查）",
             argv=_nb("create", nb["title"], "--json"),
             capture="notebook_id", jq_path="notebook.id",
+        ))
+    else:
+        steps.append(Step(
+            label=f"解析笔记本「{nb['title']}」（先查同名，查不到再建）",
+            argv=_nb("list", "--json"),
+            argv2=_nb("create", nb["title"], "--json"),
+            capture="notebook_id", jq_path="notebook.id", handler="resolve_notebook",
         ))
 
     # 2) 加资料（每条一个 source_id）
@@ -423,7 +434,13 @@ def render_plan(steps: list[Step]) -> str:
     lines = ["将要执行的命令（plan 模式不碰网络）：", ""]
     for i, s in enumerate(steps, 1):
         lines.append(f"{i:2}. {s.label}")
-        if s.argv:
+        if s.handler == "resolve_notebook":
+            # 条件步骤：两条命令只会跑其中一条，必须都印出来，否则 plan 会误导人
+            lines.append(f"      $ {' '.join(_shq(a) for a in s.argv)}   ← 探测")
+            lines.append(f"      $ {' '.join(_shq(a) for a in s.argv2)}  ← 探测未命中才跑")
+            lines.append(f"      ↳ 命中同名 → 取该本的 id；未命中 → 取 {s.jq_path} "
+                         f"（都存为 {s.capture}）")
+        elif s.argv:
             cmd = " ".join(_shq(a) for a in s.argv)
             lines.append(f"      $ {cmd}")
             if s.capture:
@@ -506,8 +523,49 @@ def execute(job: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
             return result
 
         print(f"[{i}/{len(steps)}] {step.label}", flush=True)
-        proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(ROOT))
-        rec["exit"] = proc.returncode
+
+        # 条件步骤：先探测，命中就复用，未命中才回退到 argv2
+        if step.handler == "resolve_notebook":
+            wanted = (job.get("notebook") or {}).get("title") or ""
+            probe = subprocess.run(argv, capture_output=True, text=True, cwd=str(ROOT))
+            rec["exit"] = probe.returncode
+            if probe.returncode != 0:
+                rec["ok"] = False
+                rec["error"] = "list 失败，无法判断是否已有同名笔记本"
+                rec["stderr"] = (probe.stderr or "")[-800:]
+                result["steps"].append(rec)
+                result["status"] = "failed"
+                result["failed_at"] = i
+                return result
+            try:
+                listing = json.loads(probe.stdout or "{}")
+            except json.JSONDecodeError:
+                listing = {}
+            # 上游 SKILL.md 记载的形状：{"notebooks": [{"id","title",…}], "count": N}
+            match = next((n for n in (listing.get("notebooks") or [])
+                          if (n.get("title") or "").strip() == wanted.strip()), None)
+            if match:
+                cap["notebook_id"] = match.get("id")
+                rec["ok"] = True
+                rec["reused"] = True
+                rec["candidates"] = listing.get("count")
+                rec["captured"] = {"notebook_id": match.get("id")}
+                print(f"   ↺ 复用已有笔记本 {match.get('id')}", flush=True)
+                result["steps"].append(rec)
+                continue
+            # 未命中 → 建新的
+            rec["reused"] = False
+            rec["candidates"] = listing.get("count")
+            print(f"   + 没有同名笔记本（现有 {listing.get('count')} 个），新建", flush=True)
+            proc = subprocess.run(
+                [a.format(**cap) for a in step.argv2],
+                capture_output=True, text=True, cwd=str(ROOT),
+            )
+            rec["exit"] = proc.returncode
+            rec["cmd"] = " ".join(step.argv2)
+        else:
+            proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(ROOT))
+            rec["exit"] = proc.returncode
 
         parsed: Any = None
         if proc.stdout.strip():
