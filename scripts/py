@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# 用本仓库 .venv 的 python 跑脚本，自动指向仓库内的 .notebooklm 认证目录
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export NOTEBOOKLM_HOME="${NOTEBOOKLM_HOME:-$ROOT/.notebooklm}"
+exec "$ROOT/.venv/bin/python" "$@"

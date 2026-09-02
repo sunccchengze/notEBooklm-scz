@@ -1,0 +1,8 @@
+.venv/
+out/
+*.pyc
+__pycache__/
+cookies.json
+storage_state.json
+.notebooklm/
+.env
