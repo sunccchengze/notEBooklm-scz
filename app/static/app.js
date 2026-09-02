@@ -683,7 +683,9 @@ async function restoreTasks() {
       row.innerHTML = `<div class="task-name err">${esc(name)} ${esc(t.error || "失败")}</div>`;
     } else {
       row.innerHTML = `<div class="spin"></div>
-        <div class="task-name">${esc(name)} 生成中…（刷新前已开始）</div>`;
+        <div class="task-name">${esc(name)} 生成中…（刷新前已开始）</div>
+        <button class="mini" data-act="dismissTask" data-a0="${esc(t.task_id)}"
+          title="Google 侧无法取消，这里只是不再跟踪">不再跟踪</button>`;
       pollTask(t.task_id, t.kind, row, mine);
     }
     $("tasks").appendChild(row);
@@ -768,6 +770,24 @@ async function pollResearch(tid, nbId) {
            <br><br><button class="mini" data-act="startResearch">重新研究</button></div>`;
       return;
     }
+    // 还在跑：把真实状态和已用时间显示出来，
+    // 否则用户面对一个哑转圈，完全不知道是在动还是卡死了
+    if (s.state === "running") {
+      const mm = Math.floor((s.elapsed || 0) / 60);
+      const ss = (s.elapsed || 0) % 60;
+      const label = { in_progress: "正在搜集资料", no_research: "正在启动" }[s.status_text]
+        || "正在联网研究";
+      $("rResult").innerHTML =
+        `<div class="task"><div class="spin"></div>
+           <div class="task-name">${label}…
+             <span class="hint-inline">已用 ${mm} 分 ${ss} 秒</span></div>
+         </div>
+         <p class="hint" style="margin-top:8px">深度模式通常 5-10 分钟。
+           可以切到别的页面，甚至刷新，结果不会丢。</p>
+         <div class="add-row" style="margin-top:10px">
+           <button class="mini danger" data-act="cancelResearch">取消研究</button>
+         </div>`;
+    }
     if (s.state === "unknown") {
       $("rResult").innerHTML =
         '<div class="empty">任务丢失了，可能是后台重启过，请重新研究</div>';
@@ -777,6 +797,25 @@ async function pollResearch(tid, nbId) {
   // 30 分钟还没完，给个交代，别一直转圈
   $("rResult").innerHTML =
     '<div class="empty">等待超时。深度研究有时要更久，稍后回到这个页面再看看</div>';
+}
+
+async function dismissTask(tid) {
+  try { await api(`/api/task/${encodeURIComponent(tid)}`, { method: "DELETE" }); } catch {}
+  const btn = document.querySelector(`[data-act="dismissTask"][data-a0="${CSS.escape(tid)}"]`);
+  btn?.closest(".task")?.remove();
+  toast("已从列表移除，生成仍在 Google 侧继续");
+}
+
+async function cancelResearch() {
+  if (!CUR || !RTASK) return;
+  if (!confirm("取消这次研究？")) return;
+  try {
+    await api(`/api/research/${encodeURIComponent(CUR.id)}/${encodeURIComponent(RTASK)}`,
+              { method: "DELETE" });
+    RTASK = null;
+    $("rResult").innerHTML = '<div class="empty">已取消</div>';
+    toast("已取消");
+  } catch (e) { toast(e.message, true); }
 }
 
 function renderResearchResult(list) {
@@ -1049,7 +1088,8 @@ async function runGen() {
 
   const row = document.createElement("div");
   row.className = "task";
-  row.innerHTML = `<div class="spin"></div><div class="task-name">${NAMES[kind]} 生成中…</div>`;
+  row.innerHTML = `<div class="spin"></div>
+    <div class="task-name">${NAMES[kind]} 生成中…</div>`;
   $("tasks").prepend(row);
 
   try {
@@ -1486,7 +1526,7 @@ Object.assign(ACTIONS, {
   pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
   setMode, startResearch, importResearch, toggleAllResearch, restoreResearch,
-  restoreTasks, gen, openFolder,
+  restoreTasks, cancelResearch, dismissTask, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
   renameNotebook, delNotebook, clearHistory,

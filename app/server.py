@@ -456,6 +456,67 @@ def _research_load() -> None:
 _research_load()
 
 
+async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
+                              timeout: float = 2400.0) -> Any:
+    """自己轮询研究进度。
+
+    不用 SDK 的 wait_for_completion，因为它按 task_id 严格过滤：
+    深度研究里服务端返回的任务 id 和 start() 给的经常对不上，
+    过滤后一个都不剩，就一路空转到 30 分钟超时 ——
+    界面上表现为「一直显示正在研究」（实测 last_status=no_research）。
+
+    这里的策略：先按 id 找，找不到就退而用该笔记本里唯一在飞的任务。
+    """
+    loop_ = asyncio.get_running_loop()
+    start_at = loop_.time()
+    interval = 5.0
+    last_status = ""
+    misses = 0
+
+    while True:
+        elapsed = loop_.time() - start_at
+        if elapsed >= timeout:
+            raise TimeoutError(
+                f"研究超过 {int(timeout / 60)} 分钟仍未完成"
+                f"（最后状态 {last_status or '未知'}）"
+            )
+
+        task = None
+        try:
+            # 先精确匹配
+            task = await client.research.poll(notebook_id, tid)
+        except Exception:
+            task = None
+
+        if task is None or not getattr(task, "task_id", ""):
+            # 匹配不到就看整个笔记本：只有一个在飞任务时直接认领它
+            try:
+                any_task = await client.research.poll(notebook_id)
+                if any_task is not None and getattr(any_task, "task_id", ""):
+                    task = any_task
+            except Exception:
+                task = None
+
+        if task is not None:
+            st = getattr(getattr(task, "status", None), "value", "") or ""
+            if st:
+                last_status = st
+            _RESEARCH[tid]["status_text"] = last_status
+            _RESEARCH[tid]["elapsed"] = int(elapsed)
+            if st in ("completed", "failed"):
+                return task
+            misses = 0
+        else:
+            misses += 1
+            # 连续很久什么都查不到，说明任务确实不存在了
+            if misses >= 12:
+                raise RuntimeError("查不到这个研究任务，可能已被取消")
+
+        _research_save()
+        await asyncio.sleep(min(interval, timeout - elapsed))
+        interval = min(interval * 1.2, 15.0)
+
+
 @app.post("/api/research")
 async def api_research(body: ResearchBody) -> dict[str, Any]:
     client = await get_client()
@@ -473,9 +534,7 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
 
     async def _run() -> None:
         try:
-            task = await client.research.wait_for_completion(
-                body.notebook_id, tid, timeout=1800
-            )
+            task = await _research_poll_loop(client, body.notebook_id, tid)
             status = str(getattr(getattr(task, "status", ""), "value", "") or "")
 
             # 深度研究会把结果拆到子任务里，主任务的 sources 可能是空的。
@@ -1034,6 +1093,18 @@ async def api_report_suggest(notebook_id: str) -> list[dict[str, Any]]:
             "prompt": getattr(x, "prompt", "") or getattr(x, "description", "") or "",
         })
     return [x for x in out if x["title"]]
+
+
+@app.delete("/api/task/{task_id}")
+async def api_task_dismiss(task_id: str) -> dict[str, Any]:
+    """不再跟踪这个生成任务。
+
+    Google 侧没有取消生成的接口，任务照跑；
+    这里只是把它从列表里移走，不让它一直占着界面。
+    """
+    _TASKS.pop(task_id, None)
+    _tasks_save()
+    return {"ok": True}
 
 
 @app.get("/api/task/{task_id}")
