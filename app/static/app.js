@@ -684,7 +684,7 @@ async function restoreTasks() {
         <span class="hint-inline">${esc(t.error || "")}</span>`;
     } else {
       row.innerHTML = `<div class="spin"></div>
-        <div class="task-name">${esc(name)} 生成中…（刷新前已开始）</div>
+        <div class="task-name">${esc(name)} 生成中…（已在后台进行）</div>
         <button class="mini" data-act="dismissTask" data-a0="${esc(t.task_id)}"
           title="Google 侧无法取消，这里只是不再跟踪">不再跟踪</button>`;
       pollTask(t.task_id, t.kind, row, mine);
@@ -707,9 +707,11 @@ async function restoreResearch() {
 
   RTASK = r.task_id;
   if (r.state === "running") {
+    // 刷新、切 tab、切笔记本再回来都会走到这里，
+    // 说"刷新前"不准确，用中性说法。
     $("rResult").innerHTML =
       `<div class="task"><div class="spin"></div>
-         <div class="task-name">正在联网研究…（刷新前已开始，结果不会丢）</div></div>`;
+         <div class="task-name">正在联网研究…（已在后台进行，结果不会丢）</div></div>`;
     pollResearch(r.task_id, mine);
   } else if (r.state === "done" && r.sources?.length) {
     renderResearchResult(r.sources);
