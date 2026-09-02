@@ -660,3 +660,6 @@ h1, h2, h3 {
   font-family: inherit; font-size: 14px;
 }
 #shareUsers { max-height: 200px; overflow-y: auto; min-height: 0; }
+
+/* 版本号 */
+.brand-sub.build { font-size: 11px; color: var(--muted-soft); margin-top: 2px; }

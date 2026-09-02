@@ -96,6 +96,12 @@ async function boot() {
     scPages[t] = smooth($("page-" + t));
   });
 
+  // 显示代码版本，方便确认浏览器跑的是不是最新代码
+  try {
+    const v = await api("/api/version");
+    $("build").textContent = `版本 ${v.build} · ${v.endpoints} 接口`;
+  } catch {}
+
   try {
     const a = await api("/api/auth");
     $("account").textContent = a.ok ? a.email : "未登录";

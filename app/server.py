@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -91,6 +92,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="NotebookLM 桌面版", lifespan=lifespan)
 
+
+
+@app.middleware("http")
+async def _no_cache(request, call_next):
+    """全站禁缓存。
+
+    这是"改了代码却还是老样子"的头号原因：浏览器缓存 app.js。
+    页面和接口都不大，禁掉缓存的代价可以忽略。
+    """
+    resp = await call_next(request)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.exception_handler(Exception)
@@ -1297,12 +1312,65 @@ async def api_research_cancel(notebook_id: str, task_id: str) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- 静态
 
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+#: 代码版本，用 git 短哈希或文件修改时间，界面上会显示，便于确认跑的是哪一版
+def _build_id() -> str:
+    import subprocess
+    try:
+        h = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                           cwd=str(ROOT), capture_output=True, text=True, timeout=3)
+        if h.returncode == 0 and h.stdout.strip():
+            return h.stdout.strip()
+    except Exception:
+        pass
+    # 没有 git 时退回静态文件的最后修改时间
+    try:
+        t = max((STATIC / f).stat().st_mtime for f in ("app.js", "index.html", "style.css"))
+        return time.strftime("%m%d-%H%M", time.localtime(t))
+    except Exception:
+        return "unknown"
+
+
+BUILD = _build_id()
+
+
+@app.get("/api/version")
+async def api_version() -> dict[str, Any]:
+    return {"build": BUILD, "endpoints": len([r for r in app.routes if hasattr(r, "methods")])}
+
+
+class NoCacheStatic(StaticFiles):
+    """禁用静态文件缓存。
+
+    否则改了 app.js 用户按 F5 仍会跑到旧代码，
+    表现为"明明修好了却还是老样子"，极难排查。
+    """
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:  # noqa: ANN001
+        return False
+
+    async def get_response(self, path: str, scope):  # noqa: ANN001, ANN201
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
+
+
+app.mount("/static", NoCacheStatic(directory=str(STATIC)), name="static")
 
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC / "index.html")
+    """首页也禁缓存，否则改了 index.html 用户仍会看到旧界面。
+
+    FileResponse 会自己算 etag/last-modified，必须在返回后覆盖，
+    构造时传 headers 会被它盖掉。
+    """
+    resp = FileResponse(STATIC / "index.html")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 def main() -> None:
