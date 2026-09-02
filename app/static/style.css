@@ -253,13 +253,31 @@ h1, h2, h3 {
 }
 .ref b { color: var(--primary); font-weight: 600; margin-right: var(--s-xs); }
 
-.msg-actions { margin-top: var(--s-sm); display: flex; gap: var(--s-xs); }
+.msg-actions { margin-top: var(--s-md); display: flex; gap: 6px; }
 .mini {
-  font-size: 13.5px; color: var(--muted);
-  height: 30px; padding: 0 11px; border-radius: var(--r-sm);
-  transition: background .2s var(--ease-soft), color .2s var(--ease-soft);
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--muted);
+  height: 30px; padding: 0 11px;
+  border: 1px solid transparent; border-radius: var(--r-pill);
+  transition: background .2s var(--ease-soft), color .2s var(--ease-soft),
+              border-color .2s var(--ease-soft);
 }
-.mini:hover { background: var(--surface-card); color: var(--ink); }
+.mini:hover {
+  background: var(--surface-card); color: var(--ink);
+  border-color: var(--hairline);
+}
+
+/* 图标 */
+.ico {
+  width: 15px; height: 15px; flex: 0 0 auto;
+  /* fill:none + stroke:currentColor 已写在 symbol 上，这里只管尺寸与配色 */
+}
+
+/* 复制成功的短暂反馈 */
+.mini.done {
+  color: var(--success); border-color: var(--success);
+  background: var(--canvas);
+}
 
 .dots { display: inline-flex; gap: 5px; padding: var(--s-xs) 0; }
 .dots i {
@@ -273,16 +291,35 @@ h1, h2, h3 {
 /* 推荐问题：标题 + 内容两行，不再是裸对象 */
 .suggest {
   max-width: 768px; margin: 0 auto; padding: 0 var(--s-lg);
-  display: flex; flex-wrap: wrap; gap: var(--s-xs);
-  flex-shrink: 0;
+  /* 等宽两列 —— flex-wrap 会让卡片按内容撑宽，宽窄不一很不整齐 */
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-sm); flex-shrink: 0;
 }
 .sg {
-  text-align: left; max-width: 100%;
-  padding: 9px 15px;
+  position: relative;
+  text-align: left; width: 100%; min-width: 0;
+  padding: 13px 34px 13px 15px;
   background: var(--canvas); border: 1px solid var(--hairline);
   border-radius: var(--r-lg);
   transition: background .22s var(--ease-soft), border-color .22s var(--ease-soft),
-              transform .22s var(--ease-out);
+              transform .22s var(--ease-out), box-shadow .22s var(--ease-soft);
+}
+
+.sg:hover {
+  background: var(--surface-soft); border-color: var(--muted-soft);
+  transform: translateY(-1px);
+}
+
+.sg:hover .sg-go { opacity: 1; transform: translate(0, -50%); }
+
+/* 右侧箭头，平时收着，hover 滑出 */
+.sg-go {
+  position: absolute; right: 12px; top: 50%;
+  width: 16px; height: 16px;
+  transform: translate(-4px, -50%);
+  opacity: 0; color: var(--muted-soft);
+  transition: opacity .22s var(--ease-soft), transform .22s var(--ease-out);
+  pointer-events: none;
 }
 .sg:hover {
   background: var(--surface-card); border-color: var(--surface-cream-strong);
@@ -290,8 +327,10 @@ h1, h2, h3 {
 }
 .sg-t { font-size: 14px; font-weight: 600; color: var(--ink); line-height: 1.5; }
 .sg-p {
-  font-size: 13px; color: var(--muted-soft); line-height: 1.5; margin-top: 1px;
-  max-width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; color: var(--muted-soft); line-height: 1.55; margin-top: 3px;
+  /* 最多两行，超出省略；配合 grid 让卡片高度一致 */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .composer {
@@ -577,6 +616,10 @@ h1, h2, h3 {
 @media (max-width: 1100px) {
   #app.panel-open { grid-template-columns: 276px minmax(0,1fr) 324px; }
 }
+@media (max-width: 700px) {
+  .suggest { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 860px) {
   #app, #app.panel-open { grid-template-columns: 0 minmax(0,1fr) 0; }
   .sidebar { display: none; }

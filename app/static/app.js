@@ -86,6 +86,7 @@ $("dlgArea").addEventListener("keydown", (e) => {
 });
 
 const SPIKE = '<svg><use href="#spike"/></svg>';
+const ico = (n) => `<svg class="ico"><use href="#i-${n}"/></svg>`;
 
 // ---------------------------------------------------------------- 启动
 
@@ -235,8 +236,8 @@ function renderTurn(q, a) {
       <div class="bubble"><div class="who">Notebook</div>
         <div class="text">${fmt(a)}
           <div class="msg-actions">
-            <button class="mini" data-act="copyTxt">复制</button>
-            <button class="mini" data-act="saveNote">存为笔记</button>
+            <button class="mini" data-act="copyTxt">${ico("copy")}<span>复制</span></button>
+            <button class="mini" data-act="saveNote">${ico("note")}<span>存为笔记</span></button>
           </div>
         </div></div></div>`);
   }
@@ -267,6 +268,7 @@ function renderSuggest(items) {
               title="${esc(oneline(prompt))}">
         <div class="sg-t">${esc(title || oneline(prompt).slice(0, 16))}</div>
         ${showSub ? `<div class="sg-p">${esc(sub)}</div>` : ""}
+        <svg class="sg-go"><use href="#i-arrow"/></svg>
       </button>`;
   }).join("");
 }
@@ -336,8 +338,8 @@ async function send() {
         `</details>`;
     }
     html += `<div class="msg-actions">
-        <button class="mini" data-act="copyTxt">复制</button>
-        <button class="mini" data-act="saveNote">存为笔记</button>
+        <button class="mini" data-act="copyTxt">${ico("copy")}<span>复制</span></button>
+        <button class="mini" data-act="saveNote">${ico("note")}<span>存为笔记</span></button>
       </div>`;
     p.querySelector(".text").innerHTML = html;
     p.dataset.raw = r.answer;
@@ -358,8 +360,19 @@ async function send() {
 }
 
 function copyTxt(btn) {
-  navigator.clipboard.writeText(btn.closest(".msg").dataset.raw || "")
-    .then(() => toast("已复制"));
+  navigator.clipboard.writeText(btn.closest(".msg").dataset.raw || "").then(() => {
+    // 就地变成勾，比弹 toast 更直观
+    if (btn.dataset.busy) return;
+    btn.dataset.busy = "1";
+    const html = btn.innerHTML;
+    btn.innerHTML = ico("check") + "<span>已复制</span>";
+    btn.classList.add("done");
+    setTimeout(() => {
+      btn.innerHTML = html;
+      btn.classList.remove("done");
+      delete btn.dataset.busy;
+    }, 1400);
+  });
 }
 
 async function saveNote(btn) {
