@@ -174,6 +174,7 @@ async function pick(id) {
   loadLabels();
   loadHistory();      // ← 先补历史，再给建议
   restoreResearch();  // 刷新页面后把进行中的研究接回来
+  restoreTasks();     // 生成任务同理
 }
 
 /** 载入过去的问答，让上下文可见 */
@@ -184,6 +185,9 @@ async function loadHistory() {
     const r = await api(`/api/history/${mine}`);
     turns = r.turns || [];
     err = r.error || "";
+    // 接回原会话。不回填的话，刷新后每次提问都会新开一个会话，
+    // AI 记不住前面聊过什么，「追问」也就无从谈起。
+    if (r.conversation_id) CONV = r.conversation_id;
   } catch (e) { err = e.message; }
   if (CUR?.id !== mine) return;   // 期间切换了笔记本
 
@@ -652,6 +656,38 @@ function setMode(m) {
   RMODE = m;
   $("mode-fast").classList.toggle("on", m === "fast");
   $("mode-deep").classList.toggle("on", m === "deep");
+}
+
+/* 生成任务在刷新后同样会丢进度条。把它们接回来：
+   还在跑的继续轮询，已完成的直接给下载按钮。 */
+async function restoreTasks() {
+  const mine = CUR?.id;
+  if (!mine) return;
+  let list = [];
+  try {
+    const r = await fetch(`/api/tasks-latest/${encodeURIComponent(mine)}`);
+    list = await r.json();
+  } catch { return; }
+  if (CUR?.id !== mine || !Array.isArray(list) || !list.length) return;
+
+  $("tasks").innerHTML = "";
+  list.reverse().forEach((t) => {
+    const name = NAMES[t.kind] || t.kind;
+    const row = document.createElement("div");
+    row.className = "task";
+    if (t.state === "done") {
+      row.innerHTML = `<div class="task-name">${esc(name)} 已完成</div>
+        <a class="dl-btn" href="/api/download/${encodeURIComponent(mine)}/${encodeURIComponent(t.kind)}"
+           download><svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
+    } else if (t.state === "error") {
+      row.innerHTML = `<div class="task-name err">${esc(name)} ${esc(t.error || "失败")}</div>`;
+    } else {
+      row.innerHTML = `<div class="spin"></div>
+        <div class="task-name">${esc(name)} 生成中…（刷新前已开始）</div>`;
+      pollTask(t.task_id, t.kind, row, mine);
+    }
+    $("tasks").appendChild(row);
+  });
 }
 
 /* 刷新页面后前端会丢掉 task_id，但研究还在服务器上跑。
@@ -1449,7 +1485,8 @@ Object.assign(ACTIONS, {
 
   pick, createNotebook, send, onKey, autoGrow, copyTxt, saveNote,
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
-  setMode, startResearch, importResearch, toggleAllResearch, restoreResearch, gen, openFolder,
+  setMode, startResearch, importResearch, toggleAllResearch, restoreResearch,
+  restoreTasks, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
   renameNotebook, delNotebook, clearHistory,

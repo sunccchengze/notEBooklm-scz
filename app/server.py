@@ -854,6 +854,46 @@ async def api_share(body: ShareBody) -> dict[str, Any]:
 
 _TASKS: dict[str, dict[str, Any]] = {}
 
+#: 生成任务也要落盘。音频视频动辄几分钟，
+#: 刷新一下进度就没了、也不知道跑没跑完，和研究是同一个毛病。
+_TASKS_FILE = OUT / "tasks_state.json"
+
+
+def _tasks_save() -> None:
+    try:
+        OUT.mkdir(parents=True, exist_ok=True)
+        _TASKS_FILE.write_text(json.dumps(_TASKS, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _tasks_load() -> None:
+    try:
+        if not _TASKS_FILE.exists():
+            return
+        for tid, d in json.loads(_TASKS_FILE.read_text(encoding="utf-8")).items():
+            if d.get("state") == "running":
+                # 程序重启后后台协程已经没了，状态永远不会再更新
+                d["state"] = "error"
+                d["error"] = "生成被程序关闭打断，请重新生成"
+            _TASKS[tid] = d
+    except Exception:
+        pass
+
+
+_tasks_load()
+
+
+@app.get("/api/tasks-latest/{notebook_id}")
+async def api_tasks_latest(notebook_id: str) -> list[dict[str, Any]]:
+    """这个笔记本最近的生成任务，刷新页面后据此恢复进度显示。"""
+    out = []
+    for tid, d in _TASKS.items():
+        if d.get("notebook_id") != notebook_id:
+            continue
+        out.append({"task_id": tid, **{k: v for k, v in d.items() if k != "notebook_id"}})
+    return out[-8:]
+
 _REPORTS = {
     "briefing": ReportFormat.BRIEFING_DOC,
     "study": ReportFormat.STUDY_GUIDE,
@@ -961,7 +1001,11 @@ async def api_generate(body: GenerateBody) -> dict[str, Any]:
 
     tid = st.task_id
     _evict(_TASKS, 60)
-    _TASKS[tid] = {"kind": k, "state": "running"}
+    _TASKS[tid] = {
+        "kind": k, "state": "running",
+        "notebook_id": nb, "started": time.time(),
+    }
+    _tasks_save()
 
     async def _run() -> None:
         try:
@@ -969,6 +1013,7 @@ async def api_generate(body: GenerateBody) -> dict[str, Any]:
             _TASKS[tid]["state"] = "done"
         except Exception as e:  # noqa: BLE001
             _TASKS[tid].update(state="error", error=str(e))
+        _tasks_save()
 
     asyncio.create_task(_run())
     return {"task_id": tid, "kind": k}
