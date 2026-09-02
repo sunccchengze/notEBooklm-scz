@@ -62,6 +62,23 @@ async def get_client() -> NotebookLMClient:
         return _client
 
 
+def _friendly(exc: Exception) -> tuple[int, str, str]:
+    """把底层异常翻译成用户能看懂的中文 + 处理建议。"""
+    t = f"{type(exc).__name__}: {exc}"
+    low = t.lower()
+    if "storage file not found" in low or "storage_state" in low:
+        return 401, "还没有登录", "请在终端运行 scripts\\nb.ps1 login 完成登录后重试"
+    if "cookie" in low or "auth" in low or "401" in low or "unauthorized" in low:
+        return 401, "登录已过期", "请重新运行 scripts\\nb.ps1 login"
+    if "timeout" in low or "timed out" in low:
+        return 504, "请求超时", "网络较慢或 Google 侧繁忙，请稍后重试"
+    if "network" in low or "connect" in low or "dns" in low:
+        return 502, "连不上 Google", "检查网络代理后重试"
+    if "quota" in low or "rate" in low or "429" in low:
+        return 429, "触发频率限制", "稍等几分钟再试"
+    return 500, "操作失败", t[:300]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
@@ -75,16 +92,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="NotebookLM 桌面版", lifespan=lifespan)
 
 
+
 @app.exception_handler(Exception)
 async def on_error(request, exc: Exception):
-    msg = str(exc) or exc.__class__.__name__
-    low = msg.lower()
-    hint = ""
-    if any(k in low for k in ("auth", "cookie", "sid", "storage file")):
-        hint = "认证已过期，请在终端运行： scripts\\nb.ps1 login"
-    elif "rate" in low or "429" in low:
-        hint = "请求过于频繁，请稍等片刻再试"
-    return JSONResponse(500, content={"error": msg, "hint": hint})
+    """未捕获异常统一转成中文 JSON，前端 toast 直接可读。
+
+    注意 JSONResponse 的第一个位置参数是 content，不是 status_code。
+    """
+    code, msg, hint = _friendly(exc)
+    return JSONResponse(status_code=code, content={"error": msg, "hint": hint})
 
 
 # ---------------------------------------------------------------- 模型
@@ -93,6 +109,7 @@ class AskBody(BaseModel):
     notebook_id: str
     question: str
     conversation_id: str | None = None
+    source_ids: list[str] | None = None
 
 
 class CreateBody(BaseModel):
@@ -135,11 +152,6 @@ class GenerateBody(BaseModel):
     infographic_style: str | None = None     # professional|sketch_note|...
     # 报告
     custom_prompt: str | None = None
-
-
-class RenameBody(BaseModel):
-    notebook_id: str
-    title: str
 
 
 class NoteBody(BaseModel):
@@ -237,7 +249,7 @@ async def api_create(body: CreateBody) -> dict[str, Any]:
 @app.post("/api/notebooks/rename")
 async def api_rename(body: RenameBody) -> dict[str, Any]:
     client = await get_client()
-    await client.notebooks.rename(body.notebook_id, body.title)
+    await client.notebooks.rename(body.notebook_id, body.name)
     return {"ok": True}
 
 
@@ -376,12 +388,20 @@ async def api_research_import(body: ImportBody) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- 聊天
 
+#: 每个笔记本最近一次 ask 的结果，供「存为笔记」保留引用锚点用
+_LAST_ASK: dict[str, Any] = {}
+
+
 @app.post("/api/ask")
 async def api_ask(body: AskBody) -> dict[str, Any]:
     client = await get_client()
     r = await client.chat.ask(
-        body.notebook_id, body.question, conversation_id=body.conversation_id
+        body.notebook_id,
+        body.question,
+        source_ids=body.source_ids or None,
+        conversation_id=body.conversation_id,
     )
+    _LAST_ASK[body.notebook_id] = r
     return {
         "answer": r.answer,
         "conversation_id": r.conversation_id,
@@ -1080,12 +1100,196 @@ async def api_note_update(body: NoteUpdateBody) -> dict[str, Any]:
 
 @app.post("/api/notes/from-answer")
 async def api_note_from_answer(body: dict[str, Any]) -> dict[str, Any]:
-    """把回答直接存成笔记（走官方接口，保留引用）。"""
+    """把回答存成笔记，保留 [N] 引用锚点。
+
+    save_answer_as_note 需要完整的 AskResult 对象，无法从 HTTP 重建，
+    所以 /api/ask 会把最近的结果缓存在 _LAST_ASK 里。
+    缓存失效时退回普通笔记。
+    """
+    client = await get_client()
+    nb = body["notebook_id"]
+    ar = _LAST_ASK.get(nb)
+    title = body.get("title") or "笔记"
+    if ar is not None and getattr(ar, "references", None):
+        try:
+            await client.chat.save_answer_as_note(nb, ar, title=title)
+            return {"ok": True, "rich": True}
+        except Exception:
+            pass  # 落到普通笔记
+    content = body.get("content") or getattr(ar, "answer", "") or ""
+    if not content:
+        return {"ok": False, "error": "没有可保存的内容"}
+    await client.notes.create(nb, title=title[:60], content=content)
+    return {"ok": True, "rich": False}
+
+
+# ---------------------------------------------------------------- 账号设置
+
+@app.get("/api/settings")
+async def api_settings() -> dict[str, Any]:
+    """账号级设置与用量额度，对应网页版右上角 Settings。"""
+    client = await get_client()
+    out: dict[str, Any] = {}
+    try:
+        out["language"] = await client.settings.get_output_language() or ""
+    except Exception:
+        out["language"] = ""
+    try:
+        lim = await client.settings.get_account_limits()
+        out["limits"] = {
+            k: getattr(lim, k)
+            for k in dir(lim)
+            if not k.startswith("_") and isinstance(getattr(lim, k, None), (int, float, str))
+        }
+    except Exception:
+        out["limits"] = {}
+    return out
+
+
+@app.post("/api/settings/language")
+async def api_set_language(body: dict[str, Any]) -> dict[str, Any]:
+    """设置回答的默认语言，设成中文后所有生成都用中文。"""
+    client = await get_client()
+    lang = await client.settings.set_output_language(body["language"])
+    return {"ok": True, "language": lang or body["language"]}
+
+
+# ---------------------------------------------------------------- 思维导图
+
+@app.get("/api/mindmaps/{notebook_id}")
+async def api_mindmaps(notebook_id: str) -> list[dict[str, Any]]:
     client = await get_client()
     try:
-        await client.chat.save_answer_as_note(
-            body["notebook_id"], body.get("conversation_id"), body.get("turn_key")
-        )
+        items = await client.mind_maps.list(notebook_id)
+    except Exception:
+        return []
+    return [
+        {
+            "id": getattr(x, "id", ""),
+            "title": getattr(x, "title", "") or "思维导图",
+            "kind": str(getattr(getattr(x, "kind", ""), "value", "") or ""),
+        }
+        for x in items
+    ]
+
+
+@app.get("/api/mindmap-tree/{notebook_id}/{mind_map_id}")
+async def api_mindmap_tree(notebook_id: str, mind_map_id: str) -> dict[str, Any]:
+    """思维导图的树结构，可在界面里展开查看。"""
+    client = await get_client()
+    try:
+        return {"tree": await client.mind_maps.get_tree(notebook_id, mind_map_id) or {}}
+    except Exception as e:
+        return {"tree": {}, "error": str(e)}
+
+
+@app.delete("/api/mindmaps/{notebook_id}/{mind_map_id}")
+async def api_mindmap_del(notebook_id: str, mind_map_id: str) -> dict[str, Any]:
+    client = await get_client()
+    await client.mind_maps.delete(notebook_id, mind_map_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 标签绑定资料
+
+@app.post("/api/labels/attach")
+async def api_label_attach(body: LabelBody) -> dict[str, Any]:
+    """把资料归到某个标签下。"""
+    client = await get_client()
+    await client.labels.add_sources(body.notebook_id, body.label_id or "", body.source_ids)
+    return {"ok": True}
+
+
+@app.post("/api/labels/detach")
+async def api_label_detach(body: LabelBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.labels.remove_sources(body.notebook_id, body.label_id or "", body.source_ids)
+    return {"ok": True}
+
+
+@app.post("/api/labels/rename")
+async def api_label_rename(body: LabelBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.labels.update(
+        body.notebook_id, body.label_id or "",
+        name=body.name or None, emoji=body.emoji or None,
+    )
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 合集补充
+
+@app.get("/api/collections/{collection_id}/notebooks")
+async def api_collection_notebooks(collection_id: str) -> list[dict[str, Any]]:
+    client = await get_client()
+    try:
+        items = await client.collections.notebooks(collection_id)
+    except Exception:
+        return []
+    return [
+        {"id": getattr(x, "id", ""), "title": getattr(x, "title", "") or "未命名"}
+        for x in items
+    ]
+
+
+@app.post("/api/collections/remove")
+async def api_collection_remove(body: CollectionBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.collections.remove_notebooks(body.collection_id or "", body.notebook_ids)
+    return {"ok": True}
+
+
+@app.post("/api/collections/rename")
+async def api_collection_rename(body: CollectionBody) -> dict[str, Any]:
+    client = await get_client()
+    await client.collections.rename(body.collection_id or "", body.name)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 分享补充
+
+@app.post("/api/share/view-level")
+async def api_share_view_level(body: dict[str, Any]) -> dict[str, Any]:
+    """公开链接的可见范围：整个笔记本 或 仅聊天。"""
+    from notebooklm.rpc.types import ShareViewLevel
+
+    client = await get_client()
+    lv = ShareViewLevel.CHAT_ONLY if body.get("level") == "chat_only" else ShareViewLevel.FULL_NOTEBOOK
+    await client.sharing.set_view_level(body["notebook_id"], lv)
+    return {"ok": True}
+
+
+@app.post("/api/share-users/update")
+async def api_share_update(body: dict[str, Any]) -> dict[str, Any]:
+    """改成员权限。"""
+    from notebooklm.rpc.types import SharePermission
+
+    client = await get_client()
+    perm = SharePermission.EDITOR if body.get("role") == "editor" else SharePermission.VIEWER
+    await client.sharing.update_user(body["notebook_id"], body["email"], perm)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- 资料补充
+
+@app.get("/api/source-fresh/{notebook_id}/{source_id}")
+async def api_source_fresh(notebook_id: str, source_id: str) -> dict[str, Any]:
+    """网页资料是否有更新可拉取。"""
+    client = await get_client()
+    try:
+        return {"stale": bool(await client.sources.check_freshness(notebook_id, source_id))}
+    except Exception as e:
+        return {"stale": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------- 研究补充
+
+@app.delete("/api/research/{notebook_id}/{task_id}")
+async def api_research_cancel(notebook_id: str, task_id: str) -> dict[str, Any]:
+    """取消正在跑的联网研究。"""
+    client = await get_client()
+    try:
+        await client.research.cancel(notebook_id, task_id)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}

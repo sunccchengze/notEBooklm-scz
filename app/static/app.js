@@ -36,9 +36,11 @@ function toast(msg, isErr) {
   tt = setTimeout(() => (t.className = "toast"), isErr ? 5200 : 2600);
 }
 
+/* 单引号也必须转义 —— onclick="fn('${esc(...)}')" 里若混入 '
+   会提前闭合属性，按钮直接失效（例如标题 "Andrew Ng's ..."）。 */
 const esc = (s) =>
-  String(s ?? "").replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const fmt = (s) =>
   esc(s)
@@ -122,7 +124,7 @@ function renderNotebooks() {
   const q = $("search").value.trim().toLowerCase();
   const list = q ? NBS.filter((n) => n.title.toLowerCase().includes(q)) : NBS;
   $("nbList").innerHTML = list.length
-    ? list.map((n) => `<div class="nb ${CUR?.id === n.id ? "on" : ""}" onclick="pick('${n.id}')">
+    ? list.map((n) => `<div class="nb ${CUR?.id === n.id ? "on" : ""}" onclick="pick('${esc(n.id)}')">
         <span class="nb-emo">${esc(n.emoji)}</span>
         <div class="nb-body">
           <div class="nb-title">${esc(n.title)}</div>
@@ -241,7 +243,9 @@ async function loadSuggest() {
   $("suggest").innerHTML = "";
   if (!CUR) return;
   try {
-    const s = await api(`/api/suggest/${CUR.id}`);
+    const mine = CUR.id;
+    const s = await api(`/api/suggest/${mine}`);
+    if (CUR?.id !== mine) return;
     renderSuggest(s);
   } catch {}
 }
@@ -356,7 +360,7 @@ function copyTxt(btn) {
 async function saveNote(btn) {
   const m = btn.closest(".msg");
   try {
-    await api("/api/notes", {
+    const r = await api("/api/notes/from-answer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -365,7 +369,7 @@ async function saveNote(btn) {
         content: m.dataset.raw || "",
       }),
     });
-    toast("已存为笔记");
+    toast(r.rich ? "已存为笔记（保留引用）" : "已存为笔记");
     loadNotes();
   } catch (e) { toast(e.message, true); }
 }
@@ -396,7 +400,7 @@ async function renameNotebook(id) {
     await api("/api/notebooks/rename", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notebook_id: id, title: t }),
+      body: JSON.stringify({ notebook_id: id, target_id: id, name: t }),
     });
     toast("已重命名");
     await loadNotebooks();
@@ -434,8 +438,10 @@ function resetMain() {
 
 async function loadSources() {
   if (!CUR) return;
+  const mine = CUR.id;
   try {
-    const s = await api(`/api/sources/${CUR.id}`);
+    const s = await api(`/api/sources/${mine}`);
+    if (CUR?.id !== mine) return;
     $("srcList").innerHTML = s.length
       ? s.map((x) => `<div class="item">
           <span class="dot ${x.status}"></span>
@@ -445,15 +451,17 @@ async function loadSources() {
               : x.status === "error" ? "处理失败" : x.words ? x.words + " 词" : "就绪"}</div>
           </div>
           <span class="nb-ops">
-            <button class="x" onclick="srcGuide('${x.id}')" title="AI 摘要">☰</button>
-            <button class="x" onclick="srcRefresh('${x.id}')" title="重新抓取">↻</button>
-            <button class="x" onclick="srcRename('${x.id}')" title="重命名">✎</button>
-            <button class="x" onclick="delSource('${x.id}')" title="删除">✕</button>
+            <button class="x" onclick="srcGuide('${esc(x.id)}')" title="AI 摘要">☰</button>
+            <button class="x" onclick="srcRefresh('${esc(x.id)}')" title="重新抓取">↻</button>
+            <button class="x" onclick="srcRename('${esc(x.id)}')" title="重命名">✎</button>
+            <button class="x" onclick="delSource('${esc(x.id)}')" title="删除">✕</button>
           </span>
         </div>`).join("")
       : '<div class="empty">还没有资料</div>';
     scPages.sources?.sync();
-    if (s.some((x) => x.status === "processing")) setTimeout(loadSources, 4000);
+    if (s.some((x) => x.status === "processing")) {
+      setTimeout(() => { if (CUR?.id === mine) loadSources(); }, 4000);
+    }
   } catch (e) {
     $("srcList").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
@@ -558,8 +566,10 @@ async function delSource(id) {
 
 async function loadNotes() {
   if (!CUR) return;
+  const mine = CUR.id;
   try {
-    const n = await api(`/api/notes/${CUR.id}`);
+    const n = await api(`/api/notes/${mine}`);
+    if (CUR?.id !== mine) return;
     NOTES_CACHE = n;
     $("noteList").innerHTML = n.length
       ? n.map((x) => `<div class="item"><div class="item-body">
@@ -567,8 +577,8 @@ async function loadNotes() {
             <div class="item-sub">${esc(oneline(x.content).slice(0, 70))}</div>
           </div>
           <span class="nb-ops">
-            <button class="x" onclick="viewNote('${x.id}')" title="查看">☰</button>
-            <button class="x" onclick="delNote('${x.id}')" title="删除">✕</button>
+            <button class="x" onclick="viewNote('${esc(x.id)}')" title="查看">☰</button>
+            <button class="x" onclick="delNote('${esc(x.id)}')" title="删除">✕</button>
           </span>
         </div>`).join("")
       : '<div class="empty">还没有笔记<br>在回答下方点「存为笔记」</div>';
@@ -605,6 +615,7 @@ function setMode(m) {
 async function startResearch() {
   const q = $("rqInput").value.trim();
   if (!CUR) return toast("请先选择笔记本", true);
+  const mine = CUR.id;
   if (!q) return toast("请输入研究主题", true);
 
   $("rResult").innerHTML =
@@ -615,18 +626,19 @@ async function startResearch() {
     const r = await api("/api/research", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ notebook_id: CUR.id, query: q, mode: RMODE }),
+      body: JSON.stringify({ notebook_id: mine, query: q, mode: RMODE }),
     });
     RTASK = r.task_id;
-    pollResearch(r.task_id);
+    pollResearch(r.task_id, CUR.id);
   } catch (e) {
     $("rResult").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
   }
 }
 
-async function pollResearch(tid) {
+async function pollResearch(tid, nbId) {
   for (let i = 0; i < 600; i++) {
     await new Promise((r) => setTimeout(r, 3000));
+    if (CUR?.id !== nbId) return;      // 切走了就停，别再改别人的界面
     let s;
     try { s = await api(`/api/research/${tid}`); } catch { continue; }
 
@@ -796,11 +808,13 @@ async function getSourceList() {
 /** 配置面板点「开始生成」 */
 async function runGen() {
   const kind = GEN_KIND;
+  const nbId = CUR?.id;          // 锁定，避免生成期间切换笔记本导致错位
+  if (!nbId) return toast("请先选择笔记本", true);
   closeGen();
 
   const picked = [...document.querySelectorAll("#genSrcs input:checked")].map((i) => i.value);
   const body = {
-    notebook_id: CUR.id,
+    notebook_id: nbId,
     kind,
     language: "zh",
     instructions: ($("genIns2")?.value || "").trim() || null,
@@ -821,7 +835,7 @@ async function runGen() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    pollTask(r.task_id, kind, row, CUR.id);
+    pollTask(r.task_id, kind, row, nbId);
   } catch (e) {
     row.innerHTML = `<div class="task-name err">${NAMES[kind]} 失败</div>`;
     toast(e.message, true);
@@ -831,6 +845,7 @@ async function runGen() {
 async function pollTask(tid, kind, row, nbId) {
   for (let i = 0; i < 600; i++) {
     await new Promise((r) => setTimeout(r, 3000));
+    if (!document.body.contains(row)) return;   // 那行已被清掉
     let s;
     try { s = await api(`/api/task/${tid}`); } catch { continue; }
 
@@ -869,12 +884,14 @@ function closeInfo() { $("infoMask").classList.remove("show"); }
 
 async function loadLabels() {
   if (!CUR) return;
+  const mine = CUR.id;
   try {
-    const ls = await api(`/api/labels/${CUR.id}`);
+    const ls = await api(`/api/labels/${mine}`);
+    if (CUR?.id !== mine) return;
     $("labelList").innerHTML = ls.length
       ? ls.map((l) => `<span class="tag">
            ${esc(l.emoji || "")} ${esc(l.name)}
-           <button onclick="delLabel('${l.id}')" title="删除标签">✕</button>
+           <button onclick="delLabel('${esc(l.id)}')" title="删除标签">✕</button>
          </span>`).join("")
       : '<div class="empty" style="padding:12px">还没有标签</div>';
   } catch { $("labelList").innerHTML = ""; }
@@ -994,10 +1011,12 @@ const TYPE_CN = {
 
 async function loadArtifacts() {
   if (!CUR) return;
+  const mine = CUR.id;
   const box = $("artList");
   box.innerHTML = '<div class="empty">载入中…</div>';
   try {
-    const items = await api(`/api/artifacts/${CUR.id}`);
+    const items = await api(`/api/artifacts/${mine}`);
+    if (CUR?.id !== mine) return;
     if (!items.length) {
       box.innerHTML = '<div class="empty">还没有生成过内容</div>';
       return;
@@ -1012,11 +1031,11 @@ async function loadArtifacts() {
           <div class="item-sub">${TYPE_CN[x.type] || x.type}${dur} · ${esc(x.created)}</div>
         </div>
         <span class="nb-ops">
-          ${x.done ? `<button class="x" onclick="artifactPrompt('${x.id}')" title="查看生成提示词">☰</button>` : ""}
-          ${x.done ? `<button class="x" onclick="exportArtifact('${x.id}','${esc(x.title)}')" title="导出到 Google 文档">↗</button>` : ""}
-          ${x.failed ? `<button class="x" onclick="retryArtifact('${x.id}')" title="重试">↻</button>` : ""}
-          <button class="x" onclick="renameArtifact('${x.id}')" title="重命名">✎</button>
-          <button class="x" onclick="delArtifact('${x.id}')" title="删除">✕</button>
+          ${x.done ? `<button class="x" onclick="artifactPrompt('${esc(x.id)}')" title="查看生成提示词">☰</button>` : ""}
+          ${x.done ? `<button class="x" onclick="exportArtifact('${esc(x.id)}','${esc(x.title)}')" title="导出到 Google 文档">↗</button>` : ""}
+          ${x.failed ? `<button class="x" onclick="retryArtifact('${esc(x.id)}')" title="重试">↻</button>` : ""}
+          <button class="x" onclick="renameArtifact('${esc(x.id)}')" title="重命名">✎</button>
+          <button class="x" onclick="delArtifact('${esc(x.id)}')" title="删除">✕</button>
         </span></div>`;
     }).join("");
     scPages.studio?.sync();
