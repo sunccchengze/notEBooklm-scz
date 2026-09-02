@@ -1409,6 +1409,16 @@ _DL = {
 
 
 #: ArtifactType 的 value -> (下载方法, 扩展名)。产物库按 id 下载时用。
+#: 支持多种下载格式的产物。上游 _app/download.py 明确写着：
+#: 幻灯片 pdf/pptx、测验与闪卡 json/markdown/html。
+#: 我原先把幻灯片写死成 pdf，用户拿不到可编辑的 PPTX。
+_DL_FORMATS = {
+    # 顺序即优先级：PPTX 可编辑，默认给它
+    "slide_deck": {"pptx": "pptx", "pdf": "pdf"},
+    "quiz": {"markdown": "md", "json": "json", "html": "html"},
+    "flashcards": {"markdown": "md", "json": "json", "html": "html"},
+}
+
 _DL_BY_TYPE = {
     "audio": ("download_audio", "mp3"),
     "video": ("download_video", "mp4"),
@@ -1430,7 +1440,12 @@ def _safe_name(text: str, fallback: str) -> str:
 
 
 async def _download(notebook_id: str, method: str, ext: str, stem: str,
-                    artifact_id: str | None = None):
+                    artifact_id: str | None = None, fmt: str | None = None):
+    """下载产物。fmt 用于支持多格式的类型（幻灯片 pptx、测验 html 等）。
+
+    注意扩展名必须跟着 fmt 走：上游文档特别提醒，
+    否则会把 PPTX 存成 .pdf，Content-Type 也跟着错。
+    """
     client = await get_client()
     path = OUT / f"{stem}.{ext}"
     fn = getattr(client.artifacts, method)
@@ -1438,9 +1453,10 @@ async def _download(notebook_id: str, method: str, ext: str, stem: str,
     kwargs: dict[str, Any] = {}
     if artifact_id:
         kwargs["artifact_id"] = artifact_id
-    # quiz / flashcards 默认导出 json，这里要 markdown
-    if method in ("download_quiz", "download_flashcards"):
-        kwargs["output_format"] = "markdown"
+    if fmt:
+        kwargs["output_format"] = fmt
+    elif method in ("download_quiz", "download_flashcards"):
+        kwargs["output_format"] = "markdown"   # 默认 json 对人不友好
     try:
         await fn(*args, **kwargs)
     except TypeError:
@@ -1451,8 +1467,24 @@ async def _download(notebook_id: str, method: str, ext: str, stem: str,
     return FileResponse(path, filename=path.name)
 
 
+@app.get("/api/download-formats/{notebook_id}/{artifact_id}")
+async def api_download_formats(notebook_id: str, artifact_id: str) -> dict[str, Any]:
+    """这个产物能下载成哪些格式。"""
+    client = await get_client()
+    try:
+        items = await client.artifacts.list(notebook_id) or []
+    except Exception:
+        items = []
+    for x in items:
+        if (getattr(x, "id", "") or getattr(x, "artifact_id", "")) == artifact_id:
+            t = getattr(x, "kind", None) or getattr(x, "type", None)
+            tv = getattr(t, "value", str(t or ""))
+            return {"type": tv, "formats": list(_DL_FORMATS.get(tv, {}))}
+    return {"type": "", "formats": []}
+
+
 @app.get("/api/download-artifact/{notebook_id}/{artifact_id}")
-async def api_download_artifact(notebook_id: str, artifact_id: str):
+async def api_download_artifact(notebook_id: str, artifact_id: str, format: str | None = None):
     """按产物 id 精确下载。同一类型生成过多次时靠它区分。"""
     client = await get_client()
     art = None
@@ -1472,17 +1504,32 @@ async def api_download_artifact(notebook_id: str, artifact_id: str):
     if tv not in _DL_BY_TYPE:
         raise HTTPException(400, f"这个类型不支持下载：{tv}")
     method, ext = _DL_BY_TYPE[tv]
+    fmt = None
+    choices = _DL_FORMATS.get(tv)
+    if choices:
+        fmt = format if format in choices else next(iter(choices))
+        ext = choices[fmt]      # 扩展名必须跟着格式走
     stem = _safe_name(getattr(art, "title", "") or tv, tv)
-    return await _download(notebook_id, method, ext, stem, artifact_id)
+    return await _download(notebook_id, method, ext, stem, artifact_id, fmt)
+
+
+#: 生成类型 -> 产物类型，用于查可选格式
+_KIND_TO_TYPE = {"slides": "slide_deck", "quiz": "quiz", "flashcards": "flashcards"}
 
 
 @app.get("/api/download/{notebook_id}/{kind}")
-async def api_download(notebook_id: str, kind: str):
+async def api_download(notebook_id: str, kind: str, format: str | None = None):
     """按生成类型下载最新的一个（刚生成完的任务行用）。"""
     if kind not in _DL:
         raise HTTPException(400, f"不支持下载: {kind}")
     method, ext = _DL[kind]
-    return await _download(notebook_id, method, ext, f"{kind}_{notebook_id[:8]}")
+    fmt = None
+    choices = _DL_FORMATS.get(_KIND_TO_TYPE.get(kind, ""))
+    if choices:
+        fmt = format if format in choices else next(iter(choices))
+        ext = choices[fmt]
+    return await _download(notebook_id, method, ext,
+                           f"{kind}_{notebook_id[:8]}", None, fmt)
 
 
 @app.get("/api/artifacts/{notebook_id}")

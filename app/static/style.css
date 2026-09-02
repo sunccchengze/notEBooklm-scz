@@ -776,3 +776,13 @@ h1, h2, h3 {
   border: 1px solid var(--hairline); background: var(--canvas);
 }
 .err-acts .mini:hover { background: var(--surface-card); border-color: var(--muted-soft); }
+
+/* 多格式下载：主格式实心，备选描边 */
+.dl-group { display: inline-flex; gap: 6px; flex: 0 0 auto; margin-left: var(--s-sm); }
+.dl-group .dl-btn { margin-left: 0; }
+.dl-btn.ghost {
+  color: var(--muted); border-color: var(--hairline); font-weight: 400;
+}
+.dl-btn.ghost:hover {
+  background: var(--surface-card); color: var(--ink); border-color: var(--muted-soft);
+}

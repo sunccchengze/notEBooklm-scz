@@ -724,8 +724,7 @@ async function restoreTasks() {
     row.className = "task";
     if (t.state === "done") {
       row.innerHTML = `<div class="task-name">${esc(name)} 已完成</div>
-        <a class="dl-btn" href="/api/download/${encodeURIComponent(mine)}/${encodeURIComponent(t.kind)}"
-           download><svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
+        ${taskDlButtons(mine, t.kind)}`;
     } else if (t.state === "error") {
       row.innerHTML = `<div class="task-name err">${esc(name)} 失败</div>
         <span class="hint-inline">${esc(t.error || "")}</span>`;
@@ -1232,8 +1231,7 @@ async function pollTask(tid, kind, row, nbId) {
 
     if (s.state === "done") {
       row.innerHTML = `<div class="task-name">${NAMES[kind]} 已完成</div>
-        <a class="dl-btn" href="/api/download/${encodeURIComponent(nbId)}/${encodeURIComponent(kind)}"
-           download><svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
+        ${taskDlButtons(nbId, kind)}`;
       if ($("page-studio").classList.contains("active")) loadArtifacts();
       toast(`${NAMES[kind]} 生成完成`);
       return;
@@ -1401,8 +1399,49 @@ const DOWNLOADABLE = new Set(["audio", "video", "report", "quiz", "flashcards",
 const TYPE_EXT = {
   audio: "MP3", video: "MP4", report: "Markdown", quiz: "Markdown",
   flashcards: "Markdown", mind_map: "JSON", infographic: "PNG",
-  slide_deck: "PDF", data_table: "CSV",
+  slide_deck: "PPTX", data_table: "CSV",
 };
+
+//: 支持多格式的产物（与后端 _DL_FORMATS 对应）。
+//: 幻灯片的 PPTX 是可编辑的，之前只给了 PDF。
+const MULTI_FMT = {
+  slide_deck: [["pptx", "PPTX 可编辑"], ["pdf", "PDF"]],
+  quiz: [["markdown", "Markdown"], ["html", "网页"], ["json", "JSON"]],
+  flashcards: [["markdown", "Markdown"], ["html", "网页"], ["json", "JSON"]],
+};
+
+//: 生成类型 -> 产物类型
+const KIND_TYPE = { slides: "slide_deck", quiz: "quiz", flashcards: "flashcards" };
+
+function taskDlButtons(nbId, kind) {
+  const base = `/api/download/${encodeURIComponent(nbId)}/${encodeURIComponent(kind)}`;
+  const fmts = MULTI_FMT[KIND_TYPE[kind]];
+  if (!fmts) {
+    return `<a class="dl-btn" href="${base}" download>
+              <svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
+  }
+  return `<span class="dl-group">` + fmts.map(([f, label], i) =>
+    `<a class="dl-btn${i ? " ghost" : ""}" href="${base}?format=${f}" download
+        title="下载 ${esc(label)}">${i ? "" :
+        '<svg class="ico"><use href="#i-download"/></svg>'}<span>${esc(label)}</span></a>`
+  ).join("") + `</span>`;
+}
+
+function dlButtons(nbId, x) {
+  const base = `/api/download-artifact/${encodeURIComponent(nbId)}/${encodeURIComponent(x.id)}`;
+  const fmts = MULTI_FMT[x.type];
+  if (!fmts) {
+    return `<a class="dl-btn" href="${base}" download
+              title="下载 ${esc(TYPE_EXT[x.type] || "文件")}">
+              <svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`;
+  }
+  // 第一个是推荐格式，其余收在后面
+  return `<span class="dl-group">` + fmts.map(([f, label], i) =>
+    `<a class="dl-btn${i ? " ghost" : ""}" href="${base}?format=${f}" download
+        title="下载 ${esc(label)}">${i ? "" :
+        '<svg class="ico"><use href="#i-download"/></svg>'}<span>${esc(label)}</span></a>`
+  ).join("") + `</span>`;
+}
 
 const TYPE_CN = {
   audio: "播客", video: "视频", report: "报告", quiz: "测验",
@@ -1432,11 +1471,7 @@ async function loadArtifacts() {
           <div class="item-sub">${esc(TYPE_CN[x.type] || "其他")}${dur}${
             x.created ? " · " + esc(x.created) : ""}</div>
         </div>
-        ${x.done && DOWNLOADABLE.has(x.type)
-          ? `<a class="dl-btn" href="/api/download-artifact/${encodeURIComponent(mine)}/${encodeURIComponent(x.id)}"
-               download title="下载 ${TYPE_EXT[x.type] || "文件"}">
-               <svg class="ico"><use href="#i-download"/></svg><span>下载</span></a>`
-          : ""}
+        ${x.done && DOWNLOADABLE.has(x.type) ? dlButtons(mine, x) : ""}
         <span class="nb-ops">
           ${x.done ? `<button class="x" data-act="artifactPrompt" data-a0="${esc(x.id)}" title="查看生成提示词">☰</button>` : ""}
           ${x.done ? `<button class="x" data-act="exportArtifact" data-a0="${esc(x.id)}" data-a1="${esc(x.title)}" title="导出到 Google 文档">↗</button>` : ""}
