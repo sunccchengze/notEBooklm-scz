@@ -52,7 +52,7 @@ OUT.mkdir(exist_ok=True)
 
 # ---------------------------------------------------------------- 客户端
 
-_client: NotebookLMClient | None = None
+#: 建连用的互斥锁。client 本身挂在 app.state.nblm（见 lifespan）
 _lock = asyncio.Lock()
 
 
@@ -80,11 +80,17 @@ def _evict(store: dict[str, Any], keep: int) -> None:
 
 
 async def get_client() -> NotebookLMClient:
-    global _client
+    """惰性建连，挂在 app.state 上（见 lifespan 的说明）。
+
+    单 worker 下 FastAPI 只有一个事件循环，一个 client 即可；
+    真要多 worker，每个进程各自持有自己的实例。
+    """
     async with _lock:
-        if _client is None:
-            _client = await NotebookLMClient.from_storage().__aenter__()
-        return _client
+        c = getattr(app.state, "nblm", None)
+        if c is None:
+            c = await NotebookLMClient.from_storage().__aenter__()
+            app.state.nblm = c
+        return c
 
 
 def _friendly(exc: Exception) -> tuple[int, str, str]:
@@ -125,12 +131,26 @@ def _friendly(exc: Exception) -> tuple[int, str, str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
-    if _client is not None:
-        try:
-            await _client.close()
-        except Exception:
-            pass
+    """把 client 挂在 app.state 上，而不是模块级全局。
+
+    官方 docs/python-api.md 明确写着：
+      "Do not stash a NotebookLMClient on a process-global outside the
+       lifespan — multi-worker servers fork the process and you will end
+       up with the same client object referencing different event loops."
+    client 既非线程安全、也不可跨事件循环复用，
+    跨 loop 使用会在 POST 热路径抛 RuntimeError。
+    """
+    app.state.nblm = None
+    try:
+        yield
+    finally:
+        c = getattr(app.state, "nblm", None)
+        if c is not None:
+            try:
+                await c.close()
+            except Exception:
+                pass
+            app.state.nblm = None
 
 
 app = FastAPI(title="NotebookLM 桌面版", lifespan=lifespan)
@@ -149,6 +169,18 @@ async def _no_cache(request, call_next):
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
     return resp
+
+
+@app.exception_handler(HTTPException)
+async def on_http_error(request, exc: HTTPException):
+    """HTTPException 默认返回 {"detail": ...}，
+    而前端 api() 只认 error/hint —— 不转换的话，
+    所有 raise HTTPException 里精心写的中文提示都会变成「请求失败」。
+    """
+    d = exc.detail
+    if isinstance(d, dict):
+        return JSONResponse(status_code=exc.status_code, content=d)
+    return JSONResponse(status_code=exc.status_code, content={"error": str(d)})
 
 
 @app.exception_handler(Exception)
@@ -375,14 +407,72 @@ async def api_add_text(body: AddTextBody) -> dict[str, Any]:
 
 @app.post("/api/sources/file")
 async def api_add_file(notebook_id: str = Form(...), file: UploadFile = File(...)) -> dict[str, Any]:
-    client = await get_client()
-    tmp = OUT / f"_up_{file.filename}"
-    tmp.write_bytes(await file.read())
+    """上传文件为资料。
+
+    官方 troubleshooting.md 记录了三个坑，这里都挡掉：
+      1. HTML/XHTML 会被上传端点直接拒绝
+      2. 超过约 20MB 容易上传超时
+      3. 纯文本/Markdown 走 add_file 可能被错误解析，
+         官方建议改用 add_text
+    """
+    name = os.path.basename(file.filename or "upload")
+    ext = Path(name).suffix.lower()
+
+    if ext in (".html", ".htm", ".xhtml", ".mhtml"):
+        raise HTTPException(
+            400,
+            "NotebookLM 不接受网页文件。请把网页另存为 PDF 或纯文本再上传，"
+            "或者直接用上面的「网址」输入框添加链接",
+        )
+
+    data = await file.read()
+    size_mb = len(data) / 1024 / 1024
+    if size_mb > 20:
+        raise HTTPException(
+            400,
+            f"文件 {size_mb:.1f} MB，超过约 20MB 的上传上限，容易超时。"
+            "请拆分后再上传",
+        )
+    if not data:
+        raise HTTPException(400, "文件是空的")
+
+    # 纯文本类直接走 add_text，官方明确说这样更可靠
+    if ext in (".txt", ".md", ".markdown"):
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = data.decode("gbk")      # Windows 中文环境常见
+            except UnicodeDecodeError:
+                text = data.decode("utf-8", errors="replace")
+        src = await client_add_text(notebook_id, Path(name).stem, text)
+        return {"id": src["id"], "title": src["title"]}
+
+    # 其余类型落盘再上传。文件名只取基名，避免 ../ 穿越
+    safe = _safe_name(Path(name).stem, "upload") + ext
+    tmp = OUT / f"_up_{safe}"
     try:
+        OUT.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(data)
+        client = await get_client()
         s = await client.sources.add_file(notebook_id, str(tmp))
-        return {"id": s.id, "title": s.title or file.filename}
+        if s is None:
+            raise HTTPException(502, "上传失败，Google 没有返回资料信息")
+        return {"id": s.id, "title": s.title or name}
     finally:
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+async def client_add_text(notebook_id: str, title: str, content: str) -> dict[str, Any]:
+    client = await get_client()
+    s = await client.sources.add_text(notebook_id, title or "文本", content)
+    if s is None:
+        raise HTTPException(502, "添加失败")
+    return {"id": s.id, "title": s.title or title}
+
 
 
 @app.delete("/api/sources/{notebook_id}/{source_id}")
@@ -594,6 +684,70 @@ async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
         interval = min(interval * 1.2, 15.0)
 
 
+#: 深度研究用量台账。Google 不提供「已用多少」的查询接口，
+#: 只能本地记账 —— 免费账号每月仅 10 次，烧完不给明确报错，
+#: 用户很容易在毫无察觉的情况下把额度耗光（本项目就发生过）。
+_DEEP_LOG_FILE = OUT / "deep_research_log.json"
+
+
+def _deep_log_read() -> list[dict[str, Any]]:
+    try:
+        if _DEEP_LOG_FILE.exists():
+            return json.loads(_DEEP_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def _deep_log_add(tid: str, query: str) -> None:
+    try:
+        log = _deep_log_read()
+        log.append({"task_id": tid, "query": query[:80], "at": time.time()})
+        OUT.mkdir(parents=True, exist_ok=True)
+        _DEEP_LOG_FILE.write_text(
+            json.dumps(log[-200:], ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _deep_log_mark(tid: str, ok: bool) -> None:
+    """标记这次是否真的拿到了结果，好区分「白烧的」和「有产出的」。"""
+    try:
+        log = _deep_log_read()
+        for item in reversed(log):
+            if item.get("task_id") == tid:
+                item["ok"] = ok
+                break
+        _DEEP_LOG_FILE.write_text(
+            json.dumps(log[-200:], ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+@app.get("/api/deep-usage")
+async def api_deep_usage() -> dict[str, Any]:
+    """本月已发起的深度研究次数（本地记账，含成功/失败）。"""
+    now = time.time()
+    month = 30 * 86400
+    recent = [x for x in _deep_log_read() if now - x.get("at", 0) < month]
+    ok = sum(1 for x in recent if x.get("ok") is True)
+    return {
+        "used": len(recent),
+        "succeeded": ok,
+        "wasted": len(recent) - ok,
+        "recent": [
+            {
+                "query": x.get("query", ""),
+                "ok": x.get("ok"),
+                "at": time.strftime("%m-%d %H:%M", time.localtime(x.get("at", 0))),
+            }
+            for x in recent[-10:]
+        ],
+    }
+
+
 @app.post("/api/research")
 async def api_research(body: ResearchBody) -> dict[str, Any]:
     client = await get_client()
@@ -603,6 +757,8 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
     if start is None or not getattr(start, "task_id", ""):
         raise HTTPException(502, "研究没能启动，请稍后重试")
     tid = start.task_id
+    if (body.mode or "").lower() == "deep":
+        _deep_log_add(tid, body.query)
     _evict(_RESEARCH, 20)
     _RESEARCH[tid] = {
         "state": "running", "query": body.query,
@@ -656,12 +812,16 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
                 )
             else:
                 _RESEARCH[tid]["state"] = "done"
+            if (body.mode or "").lower() == "deep":
+                _deep_log_mark(tid, _RESEARCH[tid]["state"] == "done")
         except Exception as e:  # noqa: BLE001
             _RESEARCH[tid]["state"] = "error"
             # 之前直接把 "ResearchTimeoutError: ... no_research" 这种
             # 英文异常原样丢给界面，用户完全看不懂。
             _RESEARCH[tid]["error"] = _research_error_cn(e)
             _RESEARCH[tid]["detail"] = f"{type(e).__name__}: {e}"[:300]
+            if (body.mode or "").lower() == "deep":
+                _deep_log_mark(tid, False)
         _research_save()
 
     _research_save()

@@ -661,11 +661,17 @@ let QUOTA = null;
 /* 拉取账号配额。深度研究在免费账号是 10 次/月（唯一按月计的配额），
    用完后 Google 会直接丢弃任务而不给明确报错 ——
    这是「研究莫名其妙失败」最常见的原因，所以要显式告诉用户。 */
+let DEEP_USAGE = null;
+
 async function loadQuota() {
   try {
     const r = await fetch("/api/settings");
     QUOTA = await r.json();
   } catch { QUOTA = null; }
+  try {
+    const r = await fetch("/api/deep-usage");
+    DEEP_USAGE = await r.json();
+  } catch { DEEP_USAGE = null; }
   renderQuota();
 }
 
@@ -676,8 +682,16 @@ function renderQuota() {
   const q = QUOTA.quota;
   const isFree = QUOTA.tier === 1;
   if (RMODE === "deep") {
-    el.innerHTML = `你的账号：${esc(q.name)} · 深度研究 <b>${esc(q.deep || "未知")}</b>` +
-      (isFree ? `<br><span style="color:var(--error)">免费账号深度研究每月仅 10 次，
+    const u = DEEP_USAGE;
+    let usage = "";
+    if (u && u.used > 0) {
+      const left = isFree ? Math.max(0, 10 - u.used) : null;
+      usage = `<br>近 30 天本机已发起 <b>${u.used}</b> 次` +
+        (u.wasted ? `（其中 ${u.wasted} 次没拿到结果）` : "") +
+        (left !== null ? ` · 估计剩余 <b>${left}</b> 次` : "");
+    }
+    el.innerHTML = `你的账号：${esc(q.name)} · 深度研究 <b>${esc(q.deep || "未知")}</b>${usage}` +
+      (isFree ? `<br><span style="color:var(--error)">免费账号每月仅 10 次，
          用完后 Google 会直接丢弃任务且不给明确报错。建议优先用快速模式。</span>` : "");
   } else {
     el.innerHTML = `你的账号：${esc(q.name)} · 快速研究不占深度配额`;
@@ -760,6 +774,24 @@ async function startResearch() {
   const mine = CUR.id;
   if (!q) return toast("请输入研究主题", true);
 
+  // 深度研究烧的是月配额，免费账号只有 10 次，
+  // 点错一次就少一次，所以必须先确认。
+  if (RMODE === "deep" && QUOTA?.tier === 1) {
+    const used = DEEP_USAGE?.used || 0;
+    const left = Math.max(0, 10 - used);
+    const ok = await dialog(
+      "确认发起深度研究？",
+      `免费账号每月只有 10 次。本机近 30 天已发起 ${used} 次，估计还剩 ${left} 次。\n` +
+      `快速模式不占这个配额，多数检索任务够用。\n\n` +
+      `确认请输入「确认」，或直接关闭改用快速模式。`,
+      "输入 确认 继续",
+    );
+    if (ok !== "确认") {
+      toast("已取消。可以改用快速模式");
+      return;
+    }
+  }
+
   $("rResult").innerHTML =
     `<div class="task"><div class="spin"></div><div class="task-name">正在联网研究…${
       RMODE === "deep" ? "（深度模式约 5-10 分钟）" : ""}</div></div>`;
@@ -799,12 +831,12 @@ async function pollResearch(tid, nbId) {
         $("rResult").innerHTML = '<div class="empty">没有找到结果</div>';
         return;
       }
-      if (RMODE === "deep") DEEP_FAILS = 0;
+      if (RMODE === "deep") { DEEP_FAILS = 0; loadQuota(); }
       renderResearchResult(list);
       return;
     }
     if (s.state === "error") {
-      if (RMODE === "deep") DEEP_FAILS++;
+      if (RMODE === "deep") { DEEP_FAILS++; loadQuota(); }
       $("rResult").innerHTML = errBlock(s.error, s.detail);
       return;
     }
