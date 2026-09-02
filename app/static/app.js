@@ -6,6 +6,7 @@ let CONV = null;
 let BUSY = false;
 let RMODE = "fast";
 let RTASK = null;
+let CFG = { length: "default", goal: "default", custom_prompt: "" };
 
 let scChat = null, scNb = null;
 const scPages = {};
@@ -142,7 +143,7 @@ async function pick(id) {
   $("chat").innerHTML = `<div class="welcome">
       <svg class="mark"><use href="#spike"/></svg>
       <h2>${esc(CUR.title)}</h2>
-      <p>问点什么，回答会基于这个笔记本里的资料。</p>
+      <p>正在载入历史对话…</p>
     </div>`;
   scChat?.sync();
   $("input").disabled = false;
@@ -153,7 +154,62 @@ async function pick(id) {
   RTASK = null;
   loadSources();
   loadNotes();
+  loadHistory();      // ← 先补历史，再给建议
+}
+
+/** 载入过去的问答，让上下文可见 */
+async function loadHistory() {
+  const mine = CUR?.id;
+  let turns = [];
+  try {
+    turns = await api(`/api/history/${mine}`);
+  } catch { turns = []; }
+  if (CUR?.id !== mine) return;   // 期间切换了笔记本
+
+  if (!turns.length) {
+    $("chat").innerHTML = `<div class="welcome">
+        <svg class="mark"><use href="#spike"/></svg>
+        <h2>${esc(CUR.title)}</h2>
+        <p>问点什么，回答会基于这个笔记本里的资料。</p>
+      </div>`;
+    scChat?.sync();
+    loadSuggest();
+    return;
+  }
+
+  $("chat").innerHTML =
+    `<div class="hist-tip">以下是过去的对话</div>` +
+    turns.map((t) => renderTurn(t.q, t.a)).join("");
+  // 历史不做入场动画，直接落到底部
+  $("chat").querySelectorAll(".msg").forEach((m) => (m.style.animation = "none"));
+  requestAnimationFrame(() => {
+    const w = $("chat");
+    w.scrollTop = w.scrollHeight;
+    scChat?.sync();
+  });
   loadSuggest();
+}
+
+function renderTurn(q, a) {
+  const parts = [];
+  if (q) {
+    parts.push(`<div class="msg me">
+      <div class="avatar">你</div>
+      <div class="bubble"><div class="who">你</div>
+        <div class="text">${esc(q)}</div></div></div>`);
+  }
+  if (a) {
+    parts.push(`<div class="msg ai" data-raw="${esc(a)}" data-q="${esc(q || "").slice(0, 40)}">
+      <div class="avatar">${SPIKE}</div>
+      <div class="bubble"><div class="who">Notebook</div>
+        <div class="text">${fmt(a)}
+          <div class="msg-actions">
+            <button class="mini" onclick="copyTxt(this)">复制</button>
+            <button class="mini" onclick="saveNote(this)">存为笔记</button>
+          </div>
+        </div></div></div>`);
+  }
+  return parts.join("");
 }
 
 /** 推荐问题：后端现在返回 {title, prompt}，渲染成两行卡片 */
@@ -168,14 +224,16 @@ async function loadSuggest() {
 
 function renderSuggest(items) {
   if (!items?.length) { $("suggest").innerHTML = ""; return; }
-  $("suggest").innerHTML = items.map((x, i) => {
+  $("suggest").innerHTML = items.map((x) => {
     const title = typeof x === "string" ? x : (x.title || "");
     const prompt = typeof x === "string" ? x : (x.prompt || "");
-    const sub = oneline(prompt);
-    const showSub = sub && sub !== title;
-    return `<button class="sg" data-p="${esc(prompt)}" onclick="useSuggest(this)">
-        <div class="sg-t">${esc(title)}</div>
-        ${showSub ? `<div class="sg-p" title="${esc(sub)}">${esc(sub)}</div>` : ""}
+    // 副标题只在中文时展示，英文原文仅作 tooltip，避免界面中英夹杂
+    const sub = oneline(x.en ? "" : prompt);
+    const showSub = sub && sub !== title && sub.length <= 40;
+    return `<button class="sg" data-p="${esc(prompt)}" onclick="useSuggest(this)"
+              title="${esc(oneline(prompt))}">
+        <div class="sg-t">${esc(title || oneline(prompt).slice(0, 16))}</div>
+        ${showSub ? `<div class="sg-p">${esc(sub)}</div>` : ""}
       </button>`;
   }).join("");
 }
@@ -198,7 +256,8 @@ function onKey(e) {
 
 function addMsg(who, html) {
   const w = $("chat");
-  if (w.querySelector(".welcome")) w.innerHTML = "";
+  const wel = w.querySelector(".welcome");
+  if (wel) wel.remove();          // 只移除欢迎块，保留历史消息
   const d = document.createElement("div");
   d.className = "msg " + who;
   d.innerHTML = `<div class="avatar">${who === "me" ? "你" : SPIKE}</div>
@@ -549,6 +608,59 @@ async function openFolder() {
   } catch (e) { toast(e.message, true); }
 }
 
+// ---------------------------------------------------------------- 对话设置
+
+async function openSettings() {
+  if (!CUR) return toast("请先选择笔记本", true);
+  // 拉取已有的自定义人设
+  try {
+    const c = await api(`/api/chat-config/${CUR.id}`);
+    CFG.custom_prompt = c.custom_prompt || "";
+  } catch {}
+  $("cfgCustom").value = CFG.custom_prompt;
+  markSeg("segLen", CFG.length);
+  markSeg("segGoal", CFG.goal);
+  $("cfgCustomWrap").style.display = CFG.goal === "custom" ? "" : "none";
+  $("cfgMask").classList.add("show");
+}
+
+function closeSettings() { $("cfgMask").classList.remove("show"); }
+
+function markSeg(id, val) {
+  [...$(id).children].forEach((b) => b.classList.toggle("on", b.dataset.v === val));
+}
+
+function pickLen(btn) {
+  CFG.length = btn.dataset.v;
+  markSeg("segLen", CFG.length);
+}
+
+function pickGoal(btn) {
+  CFG.goal = btn.dataset.v;
+  markSeg("segGoal", CFG.goal);
+  $("cfgCustomWrap").style.display = CFG.goal === "custom" ? "" : "none";
+}
+
+async function saveSettings() {
+  const custom = $("cfgCustom").value.trim();
+  try {
+    await api("/api/chat-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        notebook_id: CUR.id,
+        length: CFG.length,
+        goal: CFG.goal,
+        custom_prompt: CFG.goal === "custom" ? custom : null,
+      }),
+    });
+    CFG.custom_prompt = custom;
+    closeSettings();
+    const L = { shorter: "简短", default: "默认", longer: "详尽" }[CFG.length];
+    toast(`已设置为「${L}」回答`);
+  } catch (e) { toast(e.message, true); }
+}
+
 // ---------------------------------------------------------------- 面板
 
 function togglePanel() {
@@ -572,6 +684,7 @@ Object.assign(window, {
   addUrl, addFile, addTextPrompt, delSource, delNote, renderNotebooks,
   setMode, startResearch, importResearch, gen, openFolder,
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
+  openSettings, closeSettings, pickLen, pickGoal, saveSettings,
 });
 
 boot();

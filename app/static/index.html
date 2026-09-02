@@ -43,6 +43,7 @@
         <div class="sub" id="nbSub"></div>
       </div>
       <div class="top-actions">
+        <button class="btn-secondary" onclick="openSettings()" title="回答长度与风格">对话设置</button>
         <button class="btn-secondary" onclick="openFolder()" title="打开下载文件夹">下载目录</button>
         <button class="btn-secondary" onclick="togglePanel()" id="panelBtn">资料与生成</button>
       </div>
@@ -159,6 +160,38 @@
     <div class="dialog-actions">
       <button class="no" onclick="closeDialog()">取消</button>
       <button class="ok" onclick="confirmDialog()">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 对话设置 -->
+<div class="mask" id="cfgMask" onclick="if(event.target===this)closeSettings()">
+  <div class="dialog">
+    <h3>对话设置</h3>
+    <p>控制回答的长度与风格，对当前笔记本生效。</p>
+
+    <p class="sec-label">回答长度</p>
+    <div class="seg" id="segLen">
+      <button data-v="shorter" onclick="pickLen(this)">简短</button>
+      <button data-v="default" class="on" onclick="pickLen(this)">默认</button>
+      <button data-v="longer" onclick="pickLen(this)">详尽</button>
+    </div>
+
+    <p class="sec-label" style="margin-top:20px">回答风格</p>
+    <div class="seg" id="segGoal">
+      <button data-v="default" class="on" onclick="pickGoal(this)">标准</button>
+      <button data-v="learning_guide" onclick="pickGoal(this)">学习引导</button>
+      <button data-v="custom" onclick="pickGoal(this)">自定义</button>
+    </div>
+
+    <div id="cfgCustomWrap" style="display:none;margin-top:16px">
+      <p class="sec-label">自定义人设</p>
+      <textarea id="cfgCustom" placeholder="例如：你是一位耐心的老师，用通俗的比喻讲解，每次回答都先给结论再展开。"></textarea>
+    </div>
+
+    <div class="dialog-actions" style="margin-top:8px">
+      <button class="no" onclick="closeSettings()">取消</button>
+      <button class="ok" onclick="saveSettings()">保存</button>
     </div>
   </div>
 </div>

@@ -582,3 +582,14 @@ h1, h2, h3 {
   .sidebar { display: none; }
   .welcome h2 { font-size: 27px; }
 }
+
+/* 历史对话分隔 */
+.hist-tip {
+  max-width: 768px; margin: 0 auto var(--s-lg);
+  padding: 0 var(--s-lg);
+  font-size: 13px; color: var(--muted-soft); text-align: center;
+  display: flex; align-items: center; gap: var(--s-sm);
+}
+.hist-tip::before, .hist-tip::after {
+  content: ""; flex: 1; height: 1px; background: var(--hairline);
+}

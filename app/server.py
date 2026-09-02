@@ -23,7 +23,12 @@ from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
-from notebooklm import NotebookLMClient, ReportFormat  # noqa: E402
+from notebooklm import (  # noqa: E402
+    ChatGoal,
+    ChatResponseLength,
+    NotebookLMClient,
+    ReportFormat,
+)
 
 STATIC = Path(__file__).parent / "static"
 OUT = ROOT / "out"
@@ -119,6 +124,13 @@ class ResearchBody(BaseModel):
 class ShareBody(BaseModel):
     notebook_id: str
     public: bool
+
+
+class ChatConfigBody(BaseModel):
+    notebook_id: str
+    length: str = "default"   # default | longer | shorter
+    goal: str = "default"     # default | learning_guide | custom
+    custom_prompt: str | None = None
 
 
 # ---------------------------------------------------------------- 认证
@@ -322,39 +334,133 @@ async def api_ask(body: AskBody) -> dict[str, Any]:
     }
 
 
+_LENGTHS = {
+    "default": ChatResponseLength.DEFAULT,
+    "longer": ChatResponseLength.LONGER,
+    "shorter": ChatResponseLength.SHORTER,
+}
+
+_GOALS = {
+    "default": ChatGoal.DEFAULT,
+    "learning_guide": ChatGoal.LEARNING_GUIDE,
+    "custom": ChatGoal.CUSTOM,
+}
+
+
+@app.get("/api/chat-config/{notebook_id}")
+async def api_chat_config_get(notebook_id: str) -> dict[str, Any]:
+    """读取当前对话设置（自定义人设）。"""
+    client = await get_client()
+    try:
+        st = await client.chat.get_settings(notebook_id)
+        return {"custom_prompt": getattr(st, "custom_prompt", "") or ""}
+    except Exception:
+        return {"custom_prompt": ""}
+
+
+@app.post("/api/chat-config")
+async def api_chat_config(body: ChatConfigBody) -> dict[str, Any]:
+    """设置回答长度与风格。对应网页版的「对话设置」。"""
+    client = await get_client()
+    length = _LENGTHS.get(body.length, ChatResponseLength.DEFAULT)
+    goal = _GOALS.get(body.goal, ChatGoal.DEFAULT)
+    custom = (body.custom_prompt or "").strip() or None
+    if custom:
+        goal = ChatGoal.CUSTOM
+    await client.chat.configure(
+        body.notebook_id,
+        goal=goal,
+        response_length=length,
+        custom_prompt=custom,
+    )
+    return {"ok": True}
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
 @app.get("/api/suggest/{notebook_id}")
 async def api_suggest(notebook_id: str) -> list[dict[str, str]]:
-    """AI 推荐的起始问题。PromptSuggestion 只有 title / prompt 两个字段。"""
+    """AI 推荐的起始问题。PromptSuggestion 只有 title / prompt 两个字段。
+
+    Google 按笔记本内容语言返回，英文资料会给英文建议。这里在提示词后
+    追加中文指令，保证点下去得到的是中文回答。
+    """
     client = await get_client()
     try:
         items = await client.notebooks.suggest_prompts(notebook_id)
     except Exception:
-        return []
+        return list(_FALLBACK_PROMPTS)
     out = []
     for p in items[:4]:
         title = (getattr(p, "title", "") or "").strip()
         prompt = (getattr(p, "prompt", "") or "").strip()
         if not prompt:
             continue
-        out.append({"title": title or prompt[:18], "prompt": prompt})
+        # Google 按资料语言返回建议；英文资料给英文建议。
+        # 标题本地化 + 追加中文回答指令，保证界面与回答都是中文。
+        cn_title = _CN_TITLES.get(title.lower(), "")
+        if not cn_title:
+            cn_title = title if _has_cjk(title) else ""
+        ask = prompt if _has_cjk(prompt) else f"{prompt}\n\n请用中文回答。"
+        out.append({"title": cn_title, "prompt": ask, "en": title})
+
+    # 标题仍是英文（未收录的新说法）时，整体换成通用中文问题，
+    # 避免界面出现中英夹杂。
+    if not out or any(not x["title"] for x in out):
+        return list(_FALLBACK_PROMPTS)
     return out
+
+
+#: 常见英文建议标题 → 中文。未命中的走通用中文起始问题。
+_CN_TITLES = {
+    "learning workflow": "学习路径",
+    "beginner explanation": "入门讲解",
+    "technical sequence": "技术流程",
+    "exam strategies": "应试策略",
+    "common pitfalls": "常见误区",
+    "language mastery": "语言要点",
+    "key concepts": "核心概念",
+    "core concepts": "核心概念",
+    "professional briefing": "专业简报",
+    "deep dive": "深入剖析",
+    "summary": "内容总结",
+    "overview": "整体概览",
+    "practical application": "实际应用",
+    "study guide": "复习指南",
+    "critical analysis": "批判分析",
+    "comparison": "对比分析",
+    "timeline": "时间脉络",
+    "main arguments": "主要论点",
+}
+
+#: 任何笔记本都适用的中文起始问题（AI 建议不可用时兜底）
+_FALLBACK_PROMPTS = [
+    {"title": "核心要点", "prompt": "用中文总结这些资料最核心的 5 个要点，每点简要说明。"},
+    {"title": "深入讲解", "prompt": "用中文详细讲解这些资料中最重要的概念，并举例说明。"},
+    {"title": "重点梳理", "prompt": "用中文梳理这些资料的整体脉络，做成分层的提纲。"},
+    {"title": "疑难解答", "prompt": "用中文指出这些资料里最容易被误解的地方，并解释清楚。"},
+]
 
 
 @app.get("/api/history/{notebook_id}")
 async def api_history(notebook_id: str) -> list[dict[str, Any]]:
+    """历史对话。get_history 返回 list[tuple[question, answer]]。"""
     client = await get_client()
     try:
-        turns = await client.chat.get_history(notebook_id)
+        turns = await client.chat.get_history(notebook_id, limit=100)
     except Exception:
         return []
-    out = []
+    out: list[dict[str, Any]] = []
     for t in turns or []:
-        out.append(
-            {
-                "q": getattr(t, "question", "") or "",
-                "a": getattr(t, "answer", "") or "",
-            }
-        )
+        if isinstance(t, (tuple, list)) and len(t) >= 2:
+            q, a = str(t[0] or ""), str(t[1] or "")
+        else:  # 兼容将来可能改成对象
+            q = str(getattr(t, "question", "") or "")
+            a = str(getattr(t, "answer", "") or "")
+        if q or a:
+            out.append({"q": q, "a": a})
     return out[-40:]
 
 
