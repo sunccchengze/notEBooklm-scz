@@ -93,8 +93,76 @@ async def get_client() -> NotebookLMClient:
         return c
 
 
+#: 按异常「类型名」精确映射。
+#: 必须优先于关键词匹配 —— 否则 SourceAddError 会因为消息里含 "Add"
+#: 命中 "auth" 子串，被误判成「登录已过期」，把用户引向完全错误的方向。
+_EXC_CN: dict[str, tuple[int, str, str]] = {
+    # 资源不存在
+    "NotebookNotFoundError": (404, "找不到这个笔记本", "它可能已被删除，刷新一下列表"),
+    "SourceNotFoundError": (404, "找不到这份资料", "它可能已被删除，刷新一下列表"),
+    "NoteNotFoundError": (404, "找不到这条笔记", "它可能已被删除或清空"),
+    "ArtifactNotFoundError": (404, "找不到这个生成内容", "它可能已被删除"),
+    "LabelNotFoundError": (404, "找不到这个标签", "刷新一下标签列表"),
+    "CollectionNotFoundError": (404, "找不到这个合集", "它可能已被删除"),
+    "MindMapNotFoundError": (404, "找不到这个思维导图", "它可能已被删除"),
+    "NotFoundError": (404, "找不到目标", "它可能已被删除，刷新后重试"),
+    # 资料处理
+    "SourceAddError": (502, "资料添加失败", "确认网址可公开访问、文件格式受支持后重试"),
+    "SourceProcessingError": (502, "资料处理失败", "Google 没能解析这份资料，换个格式试试"),
+    "SourceError": (502, "资料操作失败", "刷新后重试"),
+    # 产物
+    "ArtifactNotReadyError": (409, "内容还没生成好", "等它跑完再下载"),
+    "ArtifactDownloadError": (502, "下载失败", "下载链接几小时就过期，刷新列表后重新点下载"),
+    "ArtifactParseError": (502, "解析生成内容失败", "换个导出格式试试"),
+    "ArtifactError": (502, "生成内容操作失败", "刷新后重试"),
+    # 配额
+    "NotebookLimitError": (429, "笔记本数量已达上限", "删掉一些不用的笔记本再新建"),
+    # 对话
+    "ChatResponseParseError": (502, "回答解析失败", "重新问一次通常就好"),
+    "ChatError": (502, "对话出错", "重新问一次，或换个说法"),
+    # 研究
+    "ResearchError": (502, "联网研究失败", "换个说法重试，或改用「快速」模式"),
+    # 各分组通用
+    "LabelError": (502, "标签操作失败", "刷新后重试"),
+    "CollectionError": (502, "合集操作失败", "刷新后重试"),
+    "NoteError": (502, "笔记操作失败", "刷新后重试"),
+    "MindMapError": (502, "思维导图操作失败", "刷新后重试"),
+    "NotebookError": (502, "笔记本操作失败", "刷新后重试"),
+    # 协议/传输
+    "RPCResponseTooLargeError": (502, "返回内容过大", "资料太多时试着缩小范围"),
+    "UnknownRPCMethodError": (502, "接口已变更", "Google 改了接口，需要升级 notebooklm-py"),
+    "DecodingError": (502, "无法解析 Google 的返回", "多半是它那边临时异常，重试一次"),
+    "ServerError": (502, "Google 服务端出错", "稍后重试"),
+    "RPCError": (502, "请求被 Google 拒绝", "稍后重试；持续出现可能是接口有变动"),
+    # 认证与限流：必须显式列出，否则会被父类 RPCError 拦走
+    "AuthError": (401, "登录已过期", "请重新运行 scripts\\nb.ps1 login"),
+    "AuthExtractionError": (401, "读取登录信息失败", "重新运行 scripts\\nb.ps1 login"),
+    "RateLimitError": (429, "请求太频繁", "稍等几分钟再试"),
+    "RPCTimeoutError": (504, "请求超时", "网络较慢或 Google 繁忙，稍后重试"),
+    "NetworkError": (502, "连不上 Google", "检查网络代理后重试"),
+    # 客户端/配置
+    "ValidationError": (400, "参数不合法", "检查填写的内容"),
+    "ConfigurationError": (500, "配置有误", "检查环境变量与登录状态"),
+    "MissingDependencyError": (500, "缺少依赖", "运行 scripts\\setup.ps1 重新安装依赖"),
+    "PackageNotFoundError": (500, "依赖包缺失", "运行 scripts\\setup.ps1 重新安装"),
+    "NonIdempotentRetryError": (409, "这个操作不能自动重试", "手动确认结果后再决定是否重来"),
+    "ClientError": (500, "客户端错误", "重启程序后重试"),
+}
+
+
 def _friendly(exc: Exception) -> tuple[int, str, str]:
-    """把底层异常翻译成用户能看懂的中文 + 处理建议。"""
+    """把底层异常翻译成用户能看懂的中文 + 处理建议。
+
+    先按异常类型精确匹配（含继承链），再退回关键词匹配。
+    """
+    # 沿继承链找最具体的映射
+    for cls in type(exc).__mro__:
+        hit = _EXC_CN.get(cls.__name__)
+        if hit:
+            if cls.__name__ not in ("ClientError", "NotebookLMError"):
+                return hit
+            break
+
     t = f"{type(exc).__name__}: {exc}"
     low = t.lower()
     if "storage file not found" in low or "storage_state" in low:
@@ -341,8 +409,14 @@ async def api_create(body: CreateBody) -> dict[str, Any]:
 @app.post("/api/notebooks/rename")
 async def api_rename(body: RenameBody) -> dict[str, Any]:
     client = await get_client()
-    await client.notebooks.rename(body.notebook_id, body.name)
-    return {"ok": True}
+    # rename 会回传对象，用它核实真的改了。
+    # 0.8.1 还没有 #2296（写操作静默成功修复），
+    # 服务端拒绝时 SDK 可能不抛错，只能自己比对。
+    nb = await client.notebooks.rename(body.notebook_id, body.name)
+    got = (getattr(nb, "title", "") or "") if nb is not None else ""
+    if got and got != body.name:
+        raise HTTPException(502, f"改名没有生效，当前仍是「{got}」")
+    return {"ok": True, "title": got or body.name}
 
 
 @app.delete("/api/notebooks/{notebook_id}")
@@ -591,7 +665,8 @@ def _research_error_cn(exc: Exception) -> str:
 
 
 async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
-                              timeout: float = 2400.0) -> Any:
+                              timeout: float = 2400.0,
+                              poll_id: str | None = None) -> Any:
     """自己轮询研究进度。
 
     不用 SDK 的 wait_for_completion，因为它按 task_id 严格过滤：
@@ -606,7 +681,8 @@ async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
     interval = 5.0
     last_status = ""
     misses = 0
-    pinned: str | None = None   # 线上真实 task_id，首次轮询后锁定
+    # 深度研究要用 report_id 起步（start().task_id 是 sessionId，poll 报 NOT_FOUND）
+    pinned: str | None = poll_id or None
 
     while True:
         elapsed = loop_.time() - start_at
@@ -629,7 +705,7 @@ async def _research_poll_loop(client: Any, notebook_id: str, tid: str,
             # 退回用 start() 的 id 再试一次
             if pinned is None:
                 try:
-                    task = await client.research.poll(notebook_id, tid)
+                    task = await client.research.poll(notebook_id, poll_id or tid)
                 except Exception:
                     task = None
             else:
@@ -756,18 +832,29 @@ async def api_research(body: ResearchBody) -> dict[str, Any]:
     )
     if start is None or not getattr(start, "task_id", ""):
         raise HTTPException(502, "研究没能启动，请稍后重试")
-    tid = start.task_id
-    if (body.mode or "").lower() == "deep":
+    # 关键：深度研究的 start().task_id 是 sessionId，
+    # poll 用它会一律报 NOT_FOUND —— 必须用 report_id。
+    # 官方 ResearchAPI.cancel 的 docstring 明确记录了这点（live-verified）。
+    # 这正是此前「研究永远转圈 / no_research」的真正根因。
+    is_deep = (body.mode or "").lower() == "deep"
+    report_id = getattr(start, "report_id", None) or ""
+    poll_id = report_id if (is_deep and report_id) else start.task_id
+    tid = start.task_id          # 内部主键仍用 task_id，保持前端引用稳定
+    if is_deep:
         _deep_log_add(tid, body.query)
     _evict(_RESEARCH, 20)
     _RESEARCH[tid] = {
         "state": "running", "query": body.query,
         "notebook_id": body.notebook_id, "sources": [],
+        "poll_id": poll_id,          # 真正用于 poll / cancel / import 的 id
+        "report_id": report_id,
+        "mode": body.mode,
     }
 
     async def _run() -> None:
         try:
-            task = await _research_poll_loop(client, body.notebook_id, tid)
+            task = await _research_poll_loop(client, body.notebook_id, tid,
+                                             poll_id=poll_id)
             status = str(getattr(getattr(task, "status", ""), "value", "") or "")
 
             # 深度研究会把结果拆到子任务里，主任务的 sources 可能是空的。
@@ -886,7 +973,9 @@ async def api_research_import(body: ImportBody) -> dict[str, Any]:
     # 导入也要用线上真实 task_id：SDK 会校验 provenance
     # （每个 ResearchSource 的 research_task_id 必须与之匹配），
     # 用 start() 那个 id 会被判定为跨任务而拒收。
-    wire = cached.get("wire_task_id") or body.task_id
+    # 同理，导入校验 provenance 时认的也是 poll 层的 id
+    wire = (cached.get("wire_task_id") or cached.get("poll_id")
+            or cached.get("report_id") or body.task_id)
     # 优先用官方的带校验版本：内建指数退避重试与去重，
     # 正是上游为 #315「导入后卡在 Add sources 模态框」做的修复。
     # 我原来手写的轮询比它粗糙，且不处理 FAILED_PRECONDITION（#2187）。
@@ -976,13 +1065,27 @@ _GOALS = {
 
 @app.get("/api/chat-config/{notebook_id}")
 async def api_chat_config_get(notebook_id: str) -> dict[str, Any]:
-    """读取当前对话设置（自定义人设）。"""
+    """读取当前对话设置。
+
+    ChatSettings 有 goal / response_length / custom_prompt 三个字段，
+    我之前只读 custom_prompt，导致面板每次都显示默认值 ——
+    而 configure 省略字段会重置它，等于用户设过的长度和风格
+    一保存就被打回默认。
+    """
     client = await get_client()
+    out = {"length": "default", "goal": "default", "custom_prompt": ""}
     try:
         st = await client.chat.get_settings(notebook_id)
-        return {"custom_prompt": getattr(st, "custom_prompt", "") or ""}
     except Exception:
-        return {"custom_prompt": ""}
+        return out
+    out["custom_prompt"] = getattr(st, "custom_prompt", "") or ""
+    g = getattr(getattr(st, "goal", None), "name", "") or ""
+    ln = getattr(getattr(st, "response_length", None), "name", "") or ""
+    out["goal"] = {"DEFAULT": "default", "CUSTOM": "custom",
+                   "LEARNING_GUIDE": "learning_guide"}.get(g, "default")
+    out["length"] = {"DEFAULT": "default", "LONGER": "longer",
+                     "SHORTER": "shorter"}.get(ln, "default")
+    return out
 
 
 @app.post("/api/chat-config")
@@ -1120,14 +1223,22 @@ async def api_history_clear(notebook_id: str) -> dict[str, Any]:
 @app.get("/api/notes/{notebook_id}")
 async def api_notes(notebook_id: str) -> list[dict[str, Any]]:
     client = await get_client()
-    return [
-        {
+    # notes.delete 实际是「清空内容」而不是删除整行
+    #（官方 docstring 原话，Google 之后才会 GC）。
+    # 不过滤的话，删掉的笔记会以空白条目留在列表里，
+    # 用户会以为没删成功。
+    out = []
+    for n in (await client.notes.list(notebook_id) or []):
+        title = (getattr(n, "title", "") or "").strip()
+        content = (getattr(n, "content", "") or "").strip()
+        if not title and not content:
+            continue          # 已被清空，视为已删除
+        out.append({
             "id": n.id,
-            "title": n.title or "(无标题)",
-            "content": (getattr(n, "content", "") or "")[:4000],
-        }
-        for n in (await client.notes.list(notebook_id) or [])
-    ]
+            "title": title or "(无标题)",
+            "content": content[:4000],
+        })
+    return out
 
 
 @app.post("/api/notes")
@@ -1564,8 +1675,11 @@ async def api_artifacts(notebook_id: str) -> list[dict[str, Any]]:
 @app.post("/api/artifacts/rename")
 async def api_artifact_rename(body: RenameBody) -> dict[str, Any]:
     client = await get_client()
-    await client.artifacts.rename(body.notebook_id, body.target_id, body.name)
-    return {"ok": True}
+    art = await client.artifacts.rename(body.notebook_id, body.target_id, body.name)
+    got = (getattr(art, "title", "") or "") if art is not None else ""
+    if got and got != body.name:
+        raise HTTPException(502, f"改名没有生效，当前仍是「{got}」")
+    return {"ok": True, "title": got or body.name}
 
 
 @app.delete("/api/artifacts/{notebook_id}/{artifact_id}")
@@ -1785,8 +1899,11 @@ async def api_collection_add(body: CollectionBody) -> dict[str, Any]:
 @app.post("/api/sources/rename")
 async def api_source_rename(body: RenameBody) -> dict[str, Any]:
     client = await get_client()
-    await client.sources.rename(body.notebook_id, body.target_id, body.name)
-    return {"ok": True}
+    src_obj = await client.sources.rename(body.notebook_id, body.target_id, body.name)
+    got = (getattr(src_obj, "title", "") or "") if src_obj is not None else ""
+    if got and got != body.name:
+        raise HTTPException(502, f"改名没有生效，当前仍是「{got}」")
+    return {"ok": True, "title": got or body.name}
 
 
 @app.post("/api/sources/refresh/{notebook_id}/{source_id}")
@@ -2079,11 +2196,25 @@ async def api_source_fresh(notebook_id: str, source_id: str) -> dict[str, Any]:
 
 @app.delete("/api/research/{notebook_id}/{task_id}")
 async def api_research_cancel(notebook_id: str, task_id: str) -> dict[str, Any]:
-    """取消正在跑的联网研究。"""
+    """取消正在跑的联网研究。
+
+    深度研究必须用 report_id 取消：传 sessionId 是静默无效的
+    （服务端无条件返回空响应，不报错也不停止），任务会继续烧配额。
+    官方 cancel 的 docstring 对此有 live-verified 的说明。
+    """
     client = await get_client()
+    cached = _RESEARCH.get(task_id) or {}
+    # 优先用轮询期间确认过的线上 id，其次 report_id，最后才回落
+    run_id = (cached.get("wire_task_id") or cached.get("poll_id")
+              or cached.get("report_id") or task_id)
     try:
-        await client.research.cancel(notebook_id, task_id)
-        return {"ok": True}
+        await client.research.cancel(notebook_id, run_id)
+        # fire-and-forget，服务端不校验也不回报，本地直接标记
+        if task_id in _RESEARCH:
+            _RESEARCH[task_id]["state"] = "error"
+            _RESEARCH[task_id]["error"] = "已取消"
+            _research_save()
+        return {"ok": True, "run_id": run_id}
     except Exception as e:
         return {"ok": False, "error": _err_cn(e)}
 

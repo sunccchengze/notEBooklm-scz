@@ -139,6 +139,12 @@
       <p class="sec-label">补充要求（可选）</p>
       <input id="genIns" class="gen-ins" placeholder="例如：用中文，风格轻松一些">
 
+      <div class="sec-head">
+        <p class="sec-label">AI 推荐做什么报告</p>
+        <button class="mini" data-act="loadReportSuggest">获取建议</button>
+      </div>
+      <div id="reportSuggest" class="tags"></div>
+
       <p class="sec-label">音视频</p>
       <div class="grid">
         <button class="gen" onclick="gen('audio')"><b>播客</b><span>音频概览 MP3</span></button>
@@ -230,6 +236,14 @@
       <button data-v="learning_guide" onclick="pickGoal(this)">学习引导</button>
       <button data-v="custom" onclick="pickGoal(this)">自定义</button>
     </div>
+
+    <p class="sec-label" style="margin-top:20px">回答语言</p>
+    <div class="seg" id="segLang">
+      <button data-v="zh" data-act="pickLang">中文</button>
+      <button data-v="en" data-act="pickLang">英文</button>
+      <button data-v="" class="on" data-act="pickLang">跟随资料</button>
+    </div>
+    <p class="hint">设成中文后，所有生成内容都会用中文，一劳永逸。</p>
 
     <div id="cfgCustomWrap" style="display:none;margin-top:16px">
       <p class="sec-label">自定义人设</p>
