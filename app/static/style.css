@@ -727,3 +727,10 @@ h1, h2, h3 {
 /* 被规则锁定的选项组 */
 .seg.locked { opacity: .45; pointer-events: none; }
 .seg button:disabled { cursor: not-allowed; }
+
+/* 关键词做成可点的标签 */
+.tag.as-btn { cursor: pointer; }
+.tag.as-btn:hover { background: var(--surface-cream-strong); border-color: var(--muted-soft); }
+
+/* 全文预览保留换行 */
+.text.pre { white-space: pre-wrap; font-size: 14px; line-height: 1.75; }

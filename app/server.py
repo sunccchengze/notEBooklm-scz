@@ -55,6 +55,19 @@ _client: NotebookLMClient | None = None
 _lock = asyncio.Lock()
 
 
+def _fmt_date(dt: Any, *, with_time: bool = False) -> str:
+    """datetime -> 本地可读字符串。None 与异常值一律返回空串。"""
+    if dt is None:
+        return ""
+    try:
+        if with_time:
+            return dt.strftime("%Y-%m-%d %H:%M")
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        t = str(dt)
+        return t[:16] if with_time else t[:10]
+
+
 async def get_client() -> NotebookLMClient:
     global _client
     async with _lock:
@@ -256,7 +269,7 @@ async def api_notebooks() -> list[dict[str, Any]]:
             "title": b.title or "(未命名)",
             "emoji": getattr(b, "emoji", "") or "◇",
             "sources": getattr(b, "sources_count", 0),
-            "created": str(getattr(b, "created_at", "") or "")[:10],
+            "created": _fmt_date(getattr(b, "created_at", None)),
         }
         for b in await client.notebooks.list()
     ]
@@ -296,11 +309,14 @@ async def api_sources(notebook_id: str) -> list[dict[str, Any]]:
     client = await get_client()
     out = []
     for s in await client.sources.list(notebook_id):
-        status = "ready"
-        if getattr(s, "is_processing", False):
-            status = "processing"
-        elif getattr(s, "is_error", False):
+        # is_processing 只覆盖 PROCESSING，PREPARING(5) 会漏成 ready，
+        # 界面上看着能用其实还没就绪。这里按 is_ready 反推更保险。
+        if getattr(s, "is_error", False):
             status = "error"
+        elif getattr(s, "is_ready", False):
+            status = "ready"
+        else:
+            status = "processing"
         out.append(
             {
                 "id": s.id,
@@ -349,8 +365,17 @@ async def api_del_source(notebook_id: str, source_id: str) -> dict[str, Any]:
 @app.get("/api/source-text/{notebook_id}/{source_id}")
 async def api_source_text(notebook_id: str, source_id: str) -> dict[str, Any]:
     client = await get_client()
-    txt = await client.sources.get_fulltext(notebook_id, source_id)
-    return {"text": (txt or "")[:20000]}
+    # get_fulltext 返回 SourceFulltext 对象（content/title/char_count），
+    # 不是字符串。之前直接切片会抛 TypeError，这个接口从来没成功过。
+    r = await client.sources.get_fulltext(notebook_id, source_id, output_format="markdown")
+    text = getattr(r, "content", None)
+    if text is None:
+        text = r if isinstance(r, str) else ""
+    return {
+        "text": str(text)[:20000],
+        "title": getattr(r, "title", "") or "",
+        "chars": getattr(r, "char_count", 0) or len(str(text)),
+    }
 
 
 # ---------------------------------------------------------------- 深度研究
@@ -985,7 +1010,7 @@ async def api_artifacts(notebook_id: str) -> list[dict[str, Any]]:
                 "done": bool(getattr(x, "is_completed", False)),
                 "failed": bool(getattr(x, "is_failed", False)),
                 "running": bool(getattr(x, "is_processing", False) or getattr(x, "is_pending", False)),
-                "created": str(getattr(x, "created_at", "") or "")[:16],
+                "created": _fmt_date(getattr(x, "created_at", None), with_time=True),
                 "duration": getattr(x, "duration_seconds", None),
                 "url": (urls[0] if urls else getattr(x, "url", "") or ""),
             }
@@ -1060,16 +1085,28 @@ async def api_share_users(notebook_id: str) -> dict[str, Any]:
     client = await get_client()
     try:
         st = await client.sharing.get_status(notebook_id)
-        users = getattr(st, "users", None) or getattr(st, "grants", None) or []
+        # 字段名是 shared_users，元素是 SharedUser(email, permission,
+        # display_name, avatar_url)。之前读 users/grants 永远是空列表，
+        # 界面上「已共享给」那栏从来不显示任何人。
+        out = []
+        for u in getattr(st, "shared_users", None) or []:
+            perm = getattr(u, "permission", None)
+            pname = getattr(perm, "name", "") or ""
+            out.append(
+                {
+                    "email": getattr(u, "email", "") or "",
+                    "name": getattr(u, "display_name", "") or "",
+                    "role": pname,
+                    "role_cn": {"OWNER": "所有者", "EDITOR": "可编辑",
+                                "VIEWER": "可查看"}.get(pname, pname or "未知"),
+                    "is_owner": pname == "OWNER",
+                }
+            )
         return {
             "public": bool(getattr(st, "is_public", False)),
-            "users": [
-                {
-                    "email": getattr(u, "email", "") or str(u),
-                    "role": str(getattr(getattr(u, "permission", ""), "name", "") or ""),
-                }
-                for u in users
-            ],
+            "url": getattr(st, "share_url", "") or "",
+            "view_level": getattr(getattr(st, "view_level", None), "name", ""),
+            "users": out,
         }
     except Exception as e:
         return {"public": False, "users": [], "error": str(e)}
@@ -1225,10 +1262,12 @@ async def api_source_guide(notebook_id: str, source_id: str) -> dict[str, Any]:
         g = await client.sources.get_guide(notebook_id, source_id)
     except Exception as e:
         return {"error": str(e)}
-    qs = getattr(g, "questions", None) or getattr(g, "key_questions", None) or []
+    # SourceGuide 只有 summary 和 keywords 两个字段，没有 questions。
+    # 之前读 questions/key_questions 永远是空，界面上那块从来没出现过。
+    kws = list(getattr(g, "keywords", None) or ())
     return {
         "summary": getattr(g, "summary", "") or "",
-        "questions": [str(q) for q in qs][:6],
+        "keywords": [str(k) for k in kws][:12],
     }
 
 
@@ -1256,11 +1295,21 @@ async def api_nb_info(notebook_id: str) -> dict[str, Any]:
     """笔记本简介与元数据。"""
     client = await get_client()
     out: dict[str, Any] = {}
+    # NotebookDescription 字段是 summary + suggested_topics，
+    # 没有 description；之前 getattr 兜底会把整个对象 repr 塞进去。
     try:
         d = await client.notebooks.get_description(notebook_id)
-        out["description"] = getattr(d, "description", "") or str(d or "")
+        out["description"] = getattr(d, "summary", "") or ""
+        out["topics"] = [
+            {
+                "question": getattr(t, "question", "") or "",
+                "prompt": getattr(t, "prompt", "") or "",
+            }
+            for t in (getattr(d, "suggested_topics", None) or [])
+        ][:6]
     except Exception:
         out["description"] = ""
+        out["topics"] = []
     try:
         out["summary"] = await client.notebooks.get_summary(notebook_id)
     except Exception:

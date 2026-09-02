@@ -560,15 +560,28 @@ async function srcGuide(id) {
     const g = await api(`/api/source-guide/${CUR.id}/${id}`);
     if (g.error) return toast(g.error, true);
     let html = `<div class="text">${fmt(g.summary || "（没有摘要）")}`;
-    if (g.questions?.length) {
-      html += `<p class="sec-label" style="margin-top:16px">这份资料能回答</p>` +
-        g.questions.map((q) =>
-          `<button class="sg" style="width:100%;margin-bottom:6px"
-             data-p="${esc(q)}" data-act="useSuggest" data-then="closeInfo">
-             <div class="sg-t">${esc(q)}</div></button>`).join("");
+    // SourceGuide 只给 summary 和 keywords，没有现成问题
+    if (g.keywords?.length) {
+      html += `<p class="sec-label" style="margin-top:16px">关键词</p>
+        <div class="tags">` +
+        g.keywords.map((k) =>
+          `<button class="tag as-btn" data-p="${esc("围绕「" + k + "」讲讲这份资料的内容")}"
+             data-act="useSuggest" data-then="closeInfo">${esc(k)}</button>`).join("") +
+        `</div>`;
     }
-    html += `</div>`;
+    html += `<div class="dialog-actions" style="justify-content:flex-start;margin-top:18px">
+        <button class="mini" data-act="srcFulltext" data-a0="${esc(id)}">查看全文</button>
+      </div></div>`;
     showInfo("资料摘要", html);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function srcFulltext(id) {
+  toast("正在读取全文…");
+  try {
+    const r = await api(`/api/source-text/${CUR.id}/${id}`);
+    showInfo(r.title || "资料全文",
+      `<p class="hint">共 ${r.chars} 字</p><div class="text pre">${esc(r.text)}</div>`);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1293,9 +1306,12 @@ async function openShare() {
     $("sharePublic").checked = !!r.public;
     $("shareUsers").innerHTML = r.users?.length
       ? r.users.map((u) => `<div class="item">
-          <div class="item-body"><div class="item-title">${esc(u.email)}</div>
-          <div class="item-sub">${u.role === "EDITOR" ? "可编辑" : "可查看"}</div></div>
-          <button class="x" data-act="delShareUser" data-a0="${esc(u.email)}" title="移除">✕</button>
+          <div class="item-body">
+            <div class="item-title">${esc(u.name || u.email)}</div>
+            <div class="item-sub">${esc(u.name ? u.email + " · " : "")}${esc(u.role_cn || "")}</div>
+          </div>
+          ${u.is_owner ? ""
+            : `<button class="x" data-act="delShareUser" data-a0="${esc(u.email)}" title="移除">✕</button>`}
         </div>`).join("")
       : '<div class="empty" style="padding:12px">还没有共享给别人</div>';
   } catch (e) {
@@ -1382,7 +1398,7 @@ Object.assign(ACTIONS, {
   togglePanel, switchTab, closeDialog, confirmDialog, useSuggest,
   openSettings, closeSettings, pickLen, pickGoal, saveSettings,
   renameNotebook, delNotebook, clearHistory,
-  srcRename, srcRefresh, srcGuide,
+  srcRename, srcRefresh, srcGuide, srcFulltext,
   addLabel, autoLabel, delLabel,
   viewNote, editNote, showInfo, closeInfo,
   pickGen, closeGen, runGen,
