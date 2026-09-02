@@ -1,0 +1,14 @@
+{
+  "id": "info-demo-0001",
+  "kind": "infographic",
+  "notebook": { "title": "信息图：NotebookLM 开源生态" },
+  "sources": [ { "type": "file", "value": "docs/调研/02-环境实测.md" } ],
+  "generate": {
+    "orientation": "portrait",
+    "detail": "standard",
+    "style": "bento-grid",
+    "language": "zh_Hans",
+    "prompt": "把沙箱出网白名单的实测结果做成一张竖版信息图。"
+  },
+  "output": { "dir": "out" }
+}

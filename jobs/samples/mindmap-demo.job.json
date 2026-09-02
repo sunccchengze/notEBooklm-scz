@@ -1,0 +1,12 @@
+{
+  "id": "mm-demo-0001",
+  "kind": "mind_map",
+  "notebook": { "title": "思维导图：NotebookLM 开源生态" },
+  "sources": [ { "type": "file", "value": "docs/调研/01-生态分析.md" } ],
+  "generate": {
+    "kind": "note-backed",
+    "language": "zh_Hans",
+    "prompt": "按「API 路线 / 浏览器自动化路线 / 纯素材」三大类组织，每类下挂具体仓库与采纳判断"
+  },
+  "output": { "dir": "out" }
+}

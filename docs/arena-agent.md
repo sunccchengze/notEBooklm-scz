@@ -153,13 +153,13 @@ MCP 侧默认注册 33 个工具（实测 fastmcp 3.4.2）：`chat_ask` / `sourc
 
 ## 6. 还没做的
 
-- **大产物回传**（GitHub Release / Artifact 通道）—— mp3 / mp4 / pptx 不适合走 Git，
-  目前只回传小文件。
-- **视频 / 信息图 / 数据表 / 思维导图 / 闪卡** 工单 kind。骨架已通用
-  （`KINDS` 表里加一项即可），但没写、没测，所以现在不声称支持。
-- **笔记本自动复用**：目前工单要么新建、要么显式给 id。按标题模糊匹配复用还没做。
-- **真实 API 端到端**：四种工单都在 mock CLI 上验证过编排逻辑，但**没有**在真实
+- **真实 API 端到端**：九种工单都在 mock CLI 上验证过编排逻辑，但**没有**在真实
   NotebookLM 上跑通过 —— 沙箱打不通 Google。这是当前最大的未验证项。
+- **大产物回传**（GitHub Release / Artifact 通道）—— mp3 / mp4 / pptx / mp4 不适合走 Git，
+  目前只回传小文件（md / json / csv / png）。
+- **笔记本自动复用**：目前工单要么新建、要么显式给 id。按标题模糊匹配复用还没做
+  —— 而 `AGENTS.md` 恰恰要求「优先复用已有笔记本」，所以这是个真实的缺口。
+- **`cinematic-video` 别名、`revise-slide` 单页改写、`artifact retry`** 还没做成工单动作。
 
 ---
 
@@ -203,26 +203,43 @@ NotesAPI.create(notebook_id, title, content) -> Note
 | `generate audio` | `--format [deep-dive\|brief\|critique\|debate]`、`--length [short\|default\|long]`、`--language`、`--prompt-file` |
 | `generate slide-deck` | `--format [detailed\|presenter]`、`--length [default\|short]`、`--language`、`--prompt-file` |
 | `generate quiz` | `--quantity [fewer\|standard\|more]`、`--difficulty [easy\|medium\|hard]`（**没有** description 位置参数、**没有** `--language`） |
+| `generate flashcards` | `--quantity [fewer\|standard\|more]`、`--difficulty [easy\|medium\|hard]`、`--prompt-file`（**没有** `--language`，与 quiz 同） |
+| `generate video` | `--format [explainer\|brief\|cinematic\|short]`、`--style [auto\|custom\|classic\|whiteboard\|kawaii\|anime\|watercolor\|retro-print\|heritage\|paper-craft]`、`--style-prompt`、`--language`、`--prompt-file` |
+| `generate infographic` | `--orientation [landscape\|portrait\|square]`、`--detail [concise\|standard\|detailed]`、`--style [auto\|sketch-note\|professional\|bento-grid\|editorial\|instructional\|bricks\|clay\|anime\|kawaii\|scientific]`、`--language`、`--prompt-file` |
+| `generate data-table` | `--prompt-file`、`--language`（**没有任何枚举选项**，DESCRIPTION 必填） |
+| `generate mind-map` | `--kind [interactive\|note-backed]`、`--instructions`、`--language`（**没有** `--prompt-file`、**没有** description 位置参数） |
 | `download slide-deck` | `--format [pdf\|pptx]`（默认 pdf）、`-a`、`-n`、`--all`、`--name`、`--dry-run`、`--force`、`--no-clobber` |
 | `download quiz` | `--format [json\|markdown\|html]`（默认 json）、同上 |
-| `download audio` | `-a`、`-n`、`--latest/--earliest/--all`、`--name`（**没有** `--format`） |
+| `download flashcards` | `--format [json\|markdown\|html]`、同上 |
+| `download audio` / `video` / `infographic` / `data-table` / `mind-map` | `-a`、`-n`、`--latest/--earliest/--all`、`--name`（**都没有** `--format`） |
 
-三条由此定下来的实现决策：
+由此定下来的实现决策（每条都对应 `KINDS` 表里的一个字段）：
 
-1. **`quiz` 不给 `--language`**。它的 `--help` 里没有这个参数，硬加会被 click 拒。
-   所以 `build_plan` 里语言只对 report / audio / slide-deck 生效。
-2. **`quiz` 没有 description 位置参数**，所以它的 `prompt_mode` 是 `"none"`，
-   工单里给了 prompt 也不会拼进命令。
-3. **`download audio` 没有 `--format`**，所以 `KINDS["podcast"]` 里没有 `download_format`，
-   下载段不会拼这个 flag —— 而 slide-deck / quiz 有。
+1. **`quiz` / `flashcards` 不给 `--language`**。它们的 `--help` 里没有这个参数，硬加会被
+   click 拒。所以这两个 kind 的 `has_language: False`。
+2. **`quiz` 没有 description 位置参数** → `prompt_mode: "none"`，工单里给了 prompt
+   也不会拼进命令。
+3. **`mind-map` 没有 `--prompt-file`** → `prompt_mode: "instructions"`，prompt 翻译成
+   `--instructions`；校验会直接拦住给 `prompt_file` 的工单，而不是静默丢弃。
+4. **`mind-map` 同步返回** `{mind_map, note_id, kind}`，没有 `task_id` →
+   `capture_task: "note_id"` + `skip_wait: True`（计划 5 步而不是 6 步）。
+   这条是从源码 `cli/generate_cmd.py:151` 的
+   `json_output_response({"mind_map": …, "note_id": …, "kind": …})` 读出来的，不是猜的。
+5. **`data-table` 没有任何枚举选项**，DESCRIPTION 必填 → `prompt_mode: "required-positional"`，
+   缺 prompt 的工单在校验阶段就被拦。
+6. **`download audio/video/infographic/data-table/mind-map` 都没有 `--format`**，
+   所以这些 kind 的 `KINDS` 里没有 `download_format`，下载段不会拼这个 flag ——
+   而 slide-deck / quiz / flashcards 有。
+7. **`--style-prompt` 只在 `--style custom` 下有意义** → 校验层直接拦，
+   不让 Agent 写一个会被静默忽略的参数。
 
 复现核对：
 
 ```bash
-for c in report audio slide-deck quiz; do
+for c in report audio slide-deck quiz flashcards video infographic data-table mind-map; do
   echo "=== generate $c ==="; .venv/bin/notebooklm generate $c --help | grep -E '^  --'
 done
-for c in audio slide-deck quiz; do
+for c in audio video slide-deck quiz flashcards infographic data-table mind-map; do
   echo "=== download $c ==="; .venv/bin/notebooklm download $c --help | sed -n '/^Options/,$p' | grep -E '^  -'
 done
 ```

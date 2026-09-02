@@ -100,6 +100,79 @@ KINDS: dict[str, dict[str, Any]] = {
         },
         "prompt_mode": "none",             # quiz 没有 description 位置参数
         "needs_sources_for_gen": True,
+        "has_language": False,             # --help 里没有 --language
+    },
+    "flashcards": {
+        "gen": ["generate", "flashcards"],
+        "wait": TIMEOUTS["quiz_wait"],
+        "download": ["download", "flashcards"],
+        "ext": "md",
+        "options": {
+            "quantity": {"choices": {"fewer", "standard", "more"}, "default": "standard"},
+            "difficulty": {"choices": {"easy", "medium", "hard"}, "default": "medium"},
+            "download_format": {"choices": {"json", "markdown", "html"}, "default": "markdown"},
+        },
+        "prompt_mode": "positional",
+        "needs_sources_for_gen": True,
+        "has_language": False,
+    },
+    "video": {
+        "gen": ["generate", "video"],
+        "wait": TIMEOUTS["video_wait"],
+        "download": ["download", "video"],
+        "ext": "mp4",
+        "options": {
+            "format": {"choices": {"explainer", "brief", "cinematic", "short"},
+                       "default": "explainer"},
+            "style": {"choices": {"auto", "custom", "classic", "whiteboard", "kawaii",
+                                  "anime", "watercolor", "retro-print", "heritage",
+                                  "paper-craft"}, "default": "auto"},
+        },
+        "prompt_mode": "positional",
+        "needs_sources_for_gen": False,
+        "has_language": True,
+        "extra": "style_prompt",           # --style-prompt，仅 --style custom 时有意义
+    },
+    "infographic": {
+        "gen": ["generate", "infographic"],
+        "wait": TIMEOUTS["report_wait"],
+        "download": ["download", "infographic"],
+        "ext": "png",
+        "options": {
+            "orientation": {"choices": {"landscape", "portrait", "square"},
+                            "default": "landscape"},
+            "detail": {"choices": {"concise", "standard", "detailed"}, "default": "standard"},
+            "style": {"choices": {"auto", "sketch-note", "professional", "bento-grid",
+                                  "editorial", "instructional", "bricks", "clay",
+                                  "anime", "kawaii", "scientific"}, "default": "auto"},
+        },
+        "prompt_mode": "positional",
+        "needs_sources_for_gen": False,
+        "has_language": True,
+    },
+    "data_table": {
+        "gen": ["generate", "data-table"],
+        "wait": TIMEOUTS["report_wait"],
+        "download": ["download", "data-table"],
+        "ext": "csv",
+        "options": {},
+        "prompt_mode": "required-positional",   # 上游：data-table 的 description 是必填的
+        "needs_sources_for_gen": False,
+        "has_language": True,
+    },
+    "mind_map": {
+        "gen": ["generate", "mind-map"],
+        "wait": 0,                          # 同步返回，没有 artifact wait 这一步
+        "download": ["download", "mind-map"],
+        "ext": "json",
+        "options": {
+            "kind": {"choices": {"interactive", "note-backed"}, "default": "interactive"},
+        },
+        "prompt_mode": "instructions",      # --instructions，不是位置参数也不是 --prompt-file
+        "needs_sources_for_gen": False,
+        "has_language": True,
+        "capture_task": "note_id",          # 返回 {mind_map, note_id, kind}，没有 task_id
+        "skip_wait": True,
     },
 }
 
@@ -157,15 +230,28 @@ def validate(job: dict[str, Any]) -> None:
         _need(dl["format"] in meta["choices"],
               f"download.format 必须是 {sorted(meta['choices'])} 之一，收到 {dl['format']!r}")
 
-    # prompt：positional 类必须有内容才生成得出想要的东西；custom report 更是硬要求
+    # prompt 的落点因 kind 而异，校验也要跟着分
     prompt = opts.get("prompt")
     prompt_file = opts.get("prompt_file")
+    mode = spec["prompt_mode"]
+
     _need(not (prompt and prompt_file), "generate.prompt 和 generate.prompt_file 不能同时给")
     if prompt_file:
+        _need(mode != "instructions",
+              f"{kind} 不支持 generate.prompt_file（它的 CLI 没有 --prompt-file），请用 generate.prompt")
         _need(Path(prompt_file).is_file(), f"generate.prompt_file 不存在: {prompt_file}")
-    if kind == "research_report" and opts.get("format") == "custom":
+
+    if mode == "required-positional":
+        # data-table 的 DESCRIPTION 是必填的（上游 SKILL.md 记载）
+        _need(bool(prompt or prompt_file), f"{kind} 必须给 generate.prompt 或 generate.prompt_file")
+    elif kind == "research_report" and opts.get("format") == "custom":
         # 上游坑：--append 在 --format custom 下被静默忽略，prompt 必须走位置参数
         _need(bool(prompt or prompt_file), "generate.format=custom 时必须给 prompt 或 prompt_file")
+
+    # video 的 --style-prompt 只在 --style custom 下才有意义
+    if spec.get("extra") == "style_prompt" and opts.get("style_prompt"):
+        _need(opts.get("style") == "custom",
+              "generate.style_prompt 只在 generate.style=custom 时生效，其它风格下会被忽略")
 
     for i, q in enumerate(job.get("ask") or []):
         _need(isinstance(q, str) and q.strip(), f"ask[{i}] 必须是非空字符串")
@@ -240,7 +326,7 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
     gen = list(spec["gen"])
     shown: list[str] = []
 
-    # 5a) 位置参数 / --append / --prompt-file
+    # 5a) prompt 的落点，每个 kind 不一样（都对着 --help 核对过）
     prompt = opts.get("prompt")
     prompt_file = opts.get("prompt_file")
     mode = spec["prompt_mode"]
@@ -251,6 +337,19 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
         else:
             gen += ["--prompt-file", prompt_file]
             shown.append(f"prompt-file={Path(prompt_file).name}")
+    elif mode == "required-positional":
+        # data-table 的 DESCRIPTION 是必填的（上游 SKILL.md 记载）
+        if prompt:
+            gen.append(prompt)
+            shown.append("prompt")
+        elif prompt_file:
+            gen += ["--prompt-file", prompt_file]
+            shown.append(f"prompt-file={Path(prompt_file).name}")
+    elif mode == "instructions":
+        # mind-map 既没有位置参数也没有 --prompt-file，只有 --instructions
+        if prompt:
+            gen += ["--instructions", prompt]
+            shown.append("instructions")
     elif mode == "append-or-positional":
         if opts.get("format") == "custom":
             # 上游坑：--append 在 --format custom 下被静默忽略，必须走位置参数
@@ -264,7 +363,7 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
             gen += ["--append", prompt]
             shown.append("append")
 
-    # 5b) 枚举选项（format / length / quantity / difficulty）
+    # 5b) 枚举选项（format / length / quantity / difficulty / orientation / detail / style / kind）
     for name, meta in spec["options"].items():
         if name.startswith("download_"):
             continue
@@ -272,30 +371,40 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
         gen += [f"--{name.replace('_', '-')}", val]
         shown.append(f"{name}={val}")
 
-    # 5c) 语言（report / audio / slide-deck 有；quiz 没有）
-    if job["kind"] in ("research_report", "podcast", "slides") and opts.get("language"):
+    # 5c) kind 特有的自由文本参数（目前只有 video 的 --style-prompt）
+    if spec.get("extra") and opts.get(spec["extra"]):
+        gen += [f"--{spec['extra'].replace('_', '-')}", opts[spec["extra"]]]
+        shown.append(spec["extra"])
+
+    # 5d) 语言 —— 按 has_language 判定，不写死 kind 名单
+    #     （quiz / flashcards 的 --help 里没有 --language，硬加会被 click 拒）
+    if spec.get("has_language", True) and opts.get("language"):
         gen += ["--language", opts["language"]]
         shown.append(f"language={opts['language']}")
 
     gen += ["-n", "{notebook_id}", "--json"]
+    # mind-map 返回 {mind_map, note_id, kind}，其余返回 {task_id, status}
+    task_key = spec.get("capture_task", "task_id")
     steps.append(Step(
         label=f"生成 {job['kind']}（{', '.join(shown) or '默认参数'}）",
-        argv=_nb(*gen), capture="task_id", jq_path="task_id", needs=["notebook_id"],
+        argv=_nb(*gen), capture="task_id", jq_path=task_key, needs=["notebook_id"],
     ))
 
-    # 6) 等生成
-    steps.append(Step(
-        label=f"等待 {job['kind']} 生成完成",
-        argv=_nb("artifact", "wait", "{task_id}", "-n", "{notebook_id}",
-                 "--timeout", str(spec["wait"])),
-        ok_codes=(0, 2), needs=["notebook_id", "task_id"],
-    ))
+    # 6) 等生成 —— mind-map 同步返回，没有这一步
+    if not spec.get("skip_wait"):
+        steps.append(Step(
+            label=f"等待 {job['kind']} 生成完成",
+            argv=_nb("artifact", "wait", "{task_id}", "-n", "{notebook_id}",
+                     "--timeout", str(spec["wait"])),
+            ok_codes=(0, 2), needs=["notebook_id", "task_id"],
+        ))
 
     # 7) 下载
     dl = job.get("download") or {}
     outdir = Path((job.get("output") or {}).get("dir", "out"))
     ext = dl.get("format", spec["options"].get("download_format", {}).get("default", spec["ext"]))
-    if job["kind"] == "quiz" and ext == "markdown":
+    # `download quiz/flashcards --format markdown` 是 CLI 的取值名，不是文件扩展名
+    if ext == "markdown":
         ext = "md"
     outfile = str(outdir / f"{job['id']}-{job['kind']}.{ext}")
     dlcmd = list(spec["download"]) + [outfile]

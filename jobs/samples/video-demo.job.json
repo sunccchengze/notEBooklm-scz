@@ -1,0 +1,13 @@
+{
+  "id": "vid-demo-0001",
+  "kind": "video",
+  "notebook": { "title": "视频：NotebookLM 开源生态" },
+  "sources": [ { "type": "file", "value": "docs/调研/01-生态分析.md" } ],
+  "generate": {
+    "format": "explainer",
+    "style": "whiteboard",
+    "language": "zh_Hans",
+    "prompt": "讲清两条路线的取舍：直连能力最全但受出网限制，工单中继现在就能跑。"
+  },
+  "output": { "dir": "out" }
+}

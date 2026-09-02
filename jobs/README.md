@@ -14,17 +14,25 @@
 | `jobs/done/*.result.json` | 执行结果（成功失败都写） | worker |
 | `jobs/.local/` | 本地直跑的结果，**已 gitignore** | 你 |
 
-## 四种 kind
+## 九种 kind
 
-| kind | 产物 | 落盘 | 典型耗时 |
-|---|---|---|---|
-| `research_report` | 简报 / 学习指南 / 博客稿 | `.md` | 5–15 min |
-| `podcast` | 音频概览 | `.m4a` | 10–20 min |
-| `slides` | 幻灯片 | `.pdf` / `.pptx` | 5–15 min |
-| `quiz` | 测验 | `.md` / `.json` / `.html` | 5–15 min |
+| kind | 产物 | 落盘 | 典型耗时 | 样例 |
+|---|---|---|---|---|
+| `research_report` | 简报 / 学习指南 / 博客稿 | `.md` | 5–15 min | `report-demo` |
+| `podcast` | 音频概览 | `.m4a` | 10–20 min | `podcast-demo` |
+| `slides` | 幻灯片 | `.pdf` / `.pptx` | 5–15 min | `slides-demo` |
+| `quiz` | 测验 | `.md` / `.json` / `.html` | 5–15 min | `quiz-demo` |
+| `flashcards` | 闪卡 | `.md` / `.json` / `.html` | 5–15 min | `flashcards-demo` |
+| `video` | 视频概览 | `.mp4` | 15–45 min | `video-demo` |
+| `infographic` | 信息图 | `.png` | 5–15 min | `infographic-demo` |
+| `data_table` | 数据表 | `.csv` | 5–15 min | `datatable-demo` |
+| `mind_map` | 思维导图 | `.json` | 同步返回 | `mindmap-demo` |
 
-四种共用同一条骨架：**建（或复用）笔记本 → 加来源 → 各自等索引 → 可选提问 →
-生成 → 等完成 → 下载**。差别只在最后三步的命令形状。
+九种共用同一条骨架：**建（或复用）笔记本 → 加来源 → 各自等索引 → 可选提问 →
+生成 → 等完成 → 下载**。差别只在最后三步的命令形状，由 `KINDS` 表声明式描述。
+
+`mind_map` 是唯一的例外：它**同步返回** `{mind_map, note_id, kind}`，没有 `task_id`，
+所以没有「等生成」这一步（步数 5 而不是 6），下载用的 id 取自 `note_id`。
 
 ## 通用字段
 
@@ -98,6 +106,62 @@
 
 > **quiz 没有 `--language`、也没有 description 位置参数** —— 它的 `--help` 里就没有。
 > 所以给它写 `prompt` 不会报错，但也不会生效。
+
+### `flashcards`
+```jsonc
+{ "quantity": "standard",        // fewer | standard | more
+  "difficulty": "hard",          // easy | medium | hard
+  "prompt": null }               // 走位置参数
+```
+配套 `"download": { "format": "markdown" }`（或 `json` / `html`）。
+和 quiz 一样**没有 `--language`**。落盘时 `markdown` 会归一成 `.md` 扩展名。
+
+### `video`
+```jsonc
+{ "format": "explainer",         // explainer | brief | cinematic | short
+  "style": "whiteboard",         // auto | custom | classic | whiteboard | kawaii |
+                                 // anime | watercolor | retro-print | heritage | paper-craft
+  "style_prompt": null,          // 仅 style=custom 时生效，其它风格下会被忽略（校验会拦）
+  "language": "zh_Hans",
+  "prompt": "某个角度" }          // 走位置参数
+```
+
+> `format: "cinematic"` 是 Veo 3 电影级视频：**忽略 `--style`**、耗时 30–40 分钟、
+> 需要 Google AI Ultra 订阅。默认 timeout 已按 2700s 配。
+
+### `infographic`
+```jsonc
+{ "orientation": "portrait",     // landscape | portrait | square
+  "detail": "standard",          // concise | standard | detailed
+  "style": "bento-grid",         // auto | sketch-note | professional | bento-grid |
+                                 // editorial | instructional | bricks | clay |
+                                 // anime | kawaii | scientific
+  "language": "zh_Hans",
+  "prompt": "……" }
+```
+
+> **infographic 是唯一有 `--orientation` 的产物**。幻灯片想要竖版只能写进 prompt，
+> 信息图可以直接给参数。
+
+### `data_table`
+```jsonc
+{ "language": "zh_Hans",
+  "prompt": "整理成表格：列A | 列B | 列C" }   // **必填**，CLI 的 DESCRIPTION 是必需的
+```
+`data_table` 没有任何枚举选项 —— 表结构完全由自然语言描述决定。
+
+### `mind_map`
+```jsonc
+{ "kind": "note-backed",         // interactive | note-backed
+  "language": "zh_Hans",
+  "prompt": "按某某分类组织" }    // 翻译成 --instructions
+```
+
+> `mind_map` 与其它媒体不同：**没有 `--prompt-file`**（CLI 里就没这个参数），
+> 只能用 `prompt` → `--instructions`。校验会拦住给 `prompt_file` 的工单。
+>
+> 而且它**同步返回** `{mind_map, note_id, kind}`，没有 `task_id`，所以计划里
+> **没有「等生成」这一步**（5 步而不是 6 步），下载用的 id 取自 `note_id`。
 
 ## 两条容易踩的规矩（来自 notebooklm-py 上游）
 

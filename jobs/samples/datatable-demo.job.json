@@ -1,0 +1,11 @@
+{
+  "id": "tbl-demo-0001",
+  "kind": "data_table",
+  "notebook": { "title": "数据表：NotebookLM 开源生态" },
+  "sources": [ { "type": "file", "value": "docs/调研/01-生态分析.md" } ],
+  "generate": {
+    "language": "zh_Hans",
+    "prompt": "整理成表格：仓库名 | 技术路线 | star 数 | 最后推送 | 是否采纳 | 拒绝原因"
+  },
+  "output": { "dir": "out" }
+}

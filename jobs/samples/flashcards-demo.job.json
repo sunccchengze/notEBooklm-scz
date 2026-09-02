@@ -1,0 +1,9 @@
+{
+  "id": "fc-demo-0001",
+  "kind": "flashcards",
+  "notebook": { "title": "闪卡：NotebookLM 开源生态" },
+  "sources": [ { "type": "file", "value": "docs/调研/01-生态分析.md" } ],
+  "generate": { "quantity": "standard", "difficulty": "hard" },
+  "download": { "format": "markdown" },
+  "output": { "dir": "out" }
+}
