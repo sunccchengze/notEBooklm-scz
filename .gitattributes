@@ -8,3 +8,4 @@
 *.md text eol=lf
 scripts/nb text eol=lf
 scripts/py text eol=lf
+*.bat text eol=crlf

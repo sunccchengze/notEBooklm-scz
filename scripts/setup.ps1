@@ -97,10 +97,16 @@ Write-Host "==> 安装 notebooklm-py (约 1-3 分钟) ..." -ForegroundColor Cyan
 & $VenvPython -m pip install --quiet "notebooklm-py[browser,cookies]"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "    完整安装失败，退回最小安装 ..." -ForegroundColor Yellow
-    & $VenvPython -m pip install --quiet -r requirements.txt
+    & $VenvPython -m pip install --quiet "notebooklm-py"
     if ($LASTEXITCODE -ne 0) {
         Fail @("安装 notebooklm-py 失败，请检查网络连接。")
     }
+}
+
+Write-Host "==> 安装图形界面依赖 ..." -ForegroundColor Cyan
+& $VenvPython -m pip install --quiet fastapi "uvicorn[standard]" python-multipart
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "    界面依赖安装失败，命令行仍可用。" -ForegroundColor Yellow
 }
 
 # ---------- 4. 验证 ----------
@@ -116,6 +122,8 @@ Write-Host ("[OK] " + $ver) -ForegroundColor Green
 Write-Host ""
 Write-Host "下一步 - 登录 (首次会下载 Chromium 约 170MB):" -ForegroundColor Cyan
 Write-Host "  .\scripts\nb.ps1 login"
+Write-Host ""
+Write-Host "登录后，双击 启动.bat 即可打开图形界面" -ForegroundColor Green
 Write-Host ""
 Write-Host "嫌下载慢？直接从已登录的浏览器读 cookie:" -ForegroundColor Cyan
 Write-Host "  .\scripts\nb.ps1 login --browser-cookies edge"

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NotebookLM 桌面版</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📓</text></svg>">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ 左侧：笔记本列表 ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">📓</span>
+      <div>
+        <div class="brand-name">NotebookLM</div>
+        <div class="brand-sub" id="account">连接中…</div>
+      </div>
+    </div>
+
+    <button class="btn-new" onclick="createNotebook()">
+      <span>＋</span> 新建笔记本
+    </button>
+
+    <input class="search" id="search" placeholder="搜索笔记本…" oninput="renderNotebooks()">
+
+    <div class="nb-list" id="nbList">
+      <div class="empty">加载中…</div>
+    </div>
+  </aside>
+
+  <!-- ============ 中间：聊天 ============ -->
+  <main class="main">
+    <header class="topbar">
+      <div class="title-wrap">
+        <h1 id="nbTitle">选择一个笔记本开始</h1>
+        <div class="sub" id="nbSub"></div>
+      </div>
+      <div class="top-actions">
+        <button class="ghost" onclick="togglePanel()" id="panelBtn">资料 &amp; 生成 ▸</button>
+      </div>
+    </header>
+
+    <div class="chat" id="chat">
+      <div class="welcome">
+        <div class="welcome-icon">💬</div>
+        <h2>和你的资料对话</h2>
+        <p>从左侧选一个笔记本，或新建一个并添加资料。<br>
+           回答都基于你自己的资料，并附带引用。</p>
+      </div>
+    </div>
+
+    <div class="suggest" id="suggest"></div>
+
+    <div class="composer">
+      <textarea id="input" rows="1"
+        placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"
+        onkeydown="onKey(event)" oninput="autoGrow(this)" disabled></textarea>
+      <button id="sendBtn" onclick="send()" disabled>发送</button>
+    </div>
+  </main>
+
+  <!-- ============ 右侧：资料与生成 ============ -->
+  <aside class="panel" id="panel">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('sources')" id="tab-sources">资料</button>
+      <button class="tab" onclick="switchTab('studio')" id="tab-studio">生成</button>
+      <button class="tab" onclick="switchTab('notes')" id="tab-notes">笔记</button>
+    </div>
+
+    <!-- 资料 -->
+    <section class="tabpage active" id="page-sources">
+      <div class="add-box">
+        <div class="add-row">
+          <input id="urlInput" placeholder="粘贴网址 / YouTube 链接">
+          <button onclick="addUrl()">添加</button>
+        </div>
+        <label class="filebtn">
+          📎 上传文件（PDF / Word / 音频 / 图片…）
+          <input type="file" id="fileInput" onchange="addFile(this)" hidden>
+        </label>
+        <button class="linklike" onclick="addTextPrompt()">✎ 粘贴一段文字</button>
+      </div>
+      <div class="list" id="srcList"><div class="empty">未选择笔记本</div></div>
+    </section>
+
+    <!-- 生成 -->
+    <section class="tabpage" id="page-studio">
+      <input id="genIns" class="gen-ins" placeholder="可选：补充要求，例如「用中文，轻松一点」">
+      <div class="grid">
+        <button class="gen" onclick="gen('audio')"><b>🎙️ 播客</b><span>音频概览 MP3</span></button>
+        <button class="gen" onclick="gen('video')"><b>🎬 视频</b><span>视频概览 MP4</span></button>
+        <button class="gen" onclick="gen('study')"><b>📖 学习指南</b><span>Markdown</span></button>
+        <button class="gen" onclick="gen('briefing')"><b>📋 简报</b><span>Markdown</span></button>
+        <button class="gen" onclick="gen('quiz')"><b>❓ 测验</b><span>题目 + 答案</span></button>
+        <button class="gen" onclick="gen('flashcards')"><b>🗂️ 闪卡</b><span>背诵卡片</span></button>
+        <button class="gen" onclick="gen('mindmap')"><b>🕸️ 思维导图</b><span>JSON</span></button>
+        <button class="gen" onclick="gen('slides')"><b>📊 幻灯片</b><span>PDF</span></button>
+        <button class="gen" onclick="gen('infographic')"><b>🖼️ 信息图</b><span>PNG</span></button>
+        <button class="gen" onclick="gen('blog')"><b>✍️ 博客稿</b><span>Markdown</span></button>
+      </div>
+      <div class="tasks" id="tasks"></div>
+    </section>
+
+    <!-- 笔记 -->
+    <section class="tabpage" id="page-notes">
+      <div class="list" id="noteList"><div class="empty">未选择笔记本</div></div>
+    </section>
+  </aside>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

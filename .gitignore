@@ -6,3 +6,4 @@ cookies.json
 storage_state.json
 .notebooklm/
 .env
+app/static/*.map
