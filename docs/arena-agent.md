@@ -213,9 +213,17 @@ NotesAPI.create(notebook_id, title, content) -> Note
 
 ## 8. CLI 参数核对记录
 
-`tools/nbjob.py` 的 `KINDS` 表里每一个可选值，都是对着已安装的 **0.8.1** 的 `--help` 输出
+`tools/nbjob.py` 的 `KINDS` 表里每一个可选值，都是对着**已安装 CLI 的 `--help` 输出**
 逐个抄的，不是从上游 README 或 SKILL.md 抄的 —— 这两者会和实际 CLI 脱节（上面第 7 节的
 `CONCEPT_EXPLANATION` 就是一例）。
+
+核对覆盖 **0.8.1 与 0.8.2 两个版本**：`requirements.txt` 写的是 `>=0.8.1,<0.9`，
+全新安装现在会拿到 0.8.2，所以两版逐条对照过。结论：
+
+- 九种 `generate` 的**枚举取值**两版**逐字一致**
+- `--language` 的有无两版一致（`quiz` / `flashcards` 没有，其余七种有）
+- `mind-map` 两版都**没有** `--prompt-file`
+- 九种的 Usage 行两版一致：八种是 `[OPTIONS] [DESCRIPTION]`，只有 `mind-map` 是 `[OPTIONS]`
 
 | 命令 | 参数与可选值（实测） |
 |---|---|
@@ -240,8 +248,12 @@ NotesAPI.create(notebook_id, title, content) -> Note
 
 1. **`quiz` / `flashcards` 不给 `--language`**。它们的 `--help` 里没有这个参数，硬加会被
    click 拒。所以这两个 kind 的 `has_language: False`。
-2. **`quiz` 没有 description 位置参数** → `prompt_mode: "none"`，工单里给了 prompt
-   也不会拼进命令。
+2. ~~**`quiz` 没有 description 位置参数**~~ —— **这条是错的，已纠正**。
+   `generate quiz --help` 的 Usage 行是 `quiz [OPTIONS] [DESCRIPTION]`，
+   0.8.1 与 0.8.2 **两版都有**位置参数。当初记成「没有」是读漏了 Usage 行，
+   后果是 `prompt_mode: "none"` 会把用户写的 `prompt` **静默丢弃**（不报错、也不生效）。
+   现已改为 `prompt_mode: "positional"`。
+   教训：判定「某参数不存在」必须看 Usage 行的位置参数，不能只扫 `--xxx` 选项列表。
 3. **`mind-map` 没有 `--prompt-file`** → `prompt_mode: "instructions"`，prompt 翻译成
    `--instructions`；校验会直接拦住给 `prompt_file` 的工单，而不是静默丢弃。
 4. **`mind-map` 同步返回** `{mind_map, note_id, kind}`，没有 `task_id` →

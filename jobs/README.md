@@ -133,12 +133,16 @@ ARTIFACT_ID 不变，`poll` / `wait` 继续对它有效。
 ### `quiz`
 ```jsonc
 { "quantity": "standard",        // fewer | standard | more
-  "difficulty": "hard" }         // easy | medium | hard
+  "difficulty": "hard",          // easy | medium | hard
+  "prompt": null }               // 可选，走位置参数（DESCRIPTION）
 ```
 配套 `"download": { "format": "markdown" }`（或 `json` / `html`）。
 
-> **quiz 没有 `--language`、也没有 description 位置参数** —— 它的 `--help` 里就没有。
-> 所以给它写 `prompt` 不会报错，但也不会生效。
+> **quiz 没有 `--language`** —— 它的 `--help` 里就没有这个参数（0.8.1 与 0.8.2
+> 都核对过），所以给它写 `language` 不会生效。
+>
+> 但它**有** description 位置参数（Usage 是 `quiz [OPTIONS] [DESCRIPTION]`），
+> 所以 `prompt` 是会生效的。
 
 ### `flashcards`
 ```jsonc

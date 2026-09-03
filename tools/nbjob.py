@@ -98,9 +98,11 @@ KINDS: dict[str, dict[str, Any]] = {
             "difficulty": {"choices": {"easy", "medium", "hard"}, "default": "medium"},
             "download_format": {"choices": {"json", "markdown", "html"}, "default": "markdown"},
         },
-        "prompt_mode": "none",             # quiz 没有 description 位置参数
+        # quiz 的 Usage 是 `quiz [OPTIONS] [DESCRIPTION]` —— 0.8.1 与 0.8.2 实测都有
+        # 位置参数。（此前记成「没有」是读错了 --help，导致 prompt 被静默丢弃。）
+        "prompt_mode": "positional",
         "needs_sources_for_gen": True,
-        "has_language": False,             # --help 里没有 --language
+        "has_language": False,             # --help 里确实没有 --language（两版核对过）
     },
     "flashcards": {
         "gen": ["generate", "flashcards"],

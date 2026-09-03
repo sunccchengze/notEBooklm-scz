@@ -7,7 +7,8 @@
   ],
   "generate": {
     "quantity": "standard",
-    "difficulty": "hard"
+    "difficulty": "hard",
+    "prompt": "只考认证机制、配额上限、限流分级这三类，题目要能区分「理解」与「背诵」。"
   },
   "download": { "format": "markdown" },
   "output": { "dir": "out" }
