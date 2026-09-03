@@ -509,7 +509,12 @@ def _download_step(job: dict[str, Any], label_kind: str,
     dlcmd += ["-a", "{task_id}", "-n", "{notebook_id}"]
     return Step(
         label=f"下载 {label_kind} → {outfile}",
-        argv=_nb(*dlcmd), capture="artifact_file", needs=["notebook_id", "task_id"],
+        # download --json 成功时的形状是 SINGLE_DOWNLOADED 信封
+        # {"operation":"download_single","artifact":{...},"output_path":"...","status":"downloaded"}
+        # （cli/services/download.py 的 build_download_envelope）。路径在 output_path 里，
+        # 不给 jq_path 会把整个 dict 存进 artifact_file，后续 ship 的 Path(art) 会 TypeError。
+        argv=_nb(*dlcmd), capture="artifact_file", jq_path="output_path",
+        needs=["notebook_id", "task_id"],
         artifact_path=outfile,
     )
 
@@ -730,8 +735,15 @@ def ship(result_path: str, *, dry_run: bool = False, tag: str | None = None,
     rp = Path(result_path)
     result = json.loads(rp.read_text(encoding="utf-8"))
 
-    # 产物路径：优先 CLI 返回的 artifact_file，退到 execute 记下的预期路径
-    art = (result.get("captured") or {}).get("artifact_file") or result.get("artifact")
+    # 产物路径：优先 CLI 返回的 artifact_file，退到 execute 记下的预期路径。
+    # 防御：artifact_file 必须是字符串。曾因下载步骤漏设 jq_path 而存进整个
+    # download 信封 dict，Path(dict) 直接 TypeError。这里只接受 str，
+    # 其它类型（dict/None）一律退回 artifact_path，绝不把非字符串喂给 Path()。
+    art = (result.get("captured") or {}).get("artifact_file")
+    if not isinstance(art, str) or not art:
+        art = result.get("artifact")
+    if not isinstance(art, str) or not art:
+        art = None
     delivery: dict[str, Any] = {"artifact": art}
 
     if not art or not Path(art).is_file():

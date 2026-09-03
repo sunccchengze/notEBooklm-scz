@@ -33,15 +33,39 @@
 **不管哪条路线，Agent 侧的动作是一样的：写工单。** 区别只在于谁来执行。
 所以 Agent 不需要判断自己在哪条路线上 —— 写完工单，能直连就直连，不能就交出去。
 
-在 Google 不可达时，你能做的离线自证有两条：
+在 Google 不可达时，你能做的离线自证有三条：
 
 ```bash
 python3 tools/nbjob.py plan jobs/pending/<id>.job.json    # 不碰网络，只打印将执行的命令
 python3 tools/nbjob.py validate jobs/pending/<id>.job.json # 只校验工单合法性
+python3 tests/run_tests.py                                # 离线回归套件，86 条断言
 ```
 
 `ship --dry-run` 也不碰网络（只判定产物该走 Git 还是 Release），但它要的是
 `execute` 产出的 result 文件，所以在完全跑不通的环境里用不上。
+
+### 2.1 改过 `tools/nbjob.py` 之后必须跑回归套件
+
+```bash
+python3 tests/run_tests.py
+```
+
+它把仓库拷进临时目录，用 `tests/mock_nb.sh` 冒充 `scripts/nb`，把十种 kind 的
+`validate → plan → execute → ship` 全链路跑一遍，**完全离线、不需要凭据**。
+
+为什么这个套件值得存在：`download` 步骤曾漏设 `jq_path`，把整个 download 信封
+dict 存进 `captured.artifact_file`，`ship` 拿到后 `Path(dict)` 直接 TypeError。
+这个 bug 潜伏了好几轮，因为当时的验证用的是 `/tmp` 里的一次性 mock，它的
+download 分支只 echo 了裸字符串 `downloaded`（不是 JSON），形状错误被完全掩盖。
+
+所以 `mock_nb.sh` 的每个分支都照抄上游 0.8.2 源码里的信封构造，并在文件头
+标了出处行号。**上游升级后若某条断言变红，先对照那些行号判断是 mock 该更新
+还是代码该改** —— 不要为了让测试变绿而直接放宽断言。
+
+套件里还包含三条针对已知回归点的断言，别删：
+`captured.artifact_file` 必须是 str（上面那个 bug）、
+`artifact wait` 返回 exit 2 必须判失败且不执行下载（退出码契约）、
+quiz 的 prompt 必须真的出现在 `generate quiz` 命令里（`prompt_mode` 回归）。
 
 ## 3. 硬规矩
 
