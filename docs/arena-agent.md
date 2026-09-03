@@ -288,6 +288,23 @@ NotesAPI.create(notebook_id, title, content) -> Note
 10. **`revise-slide` 不做成 kind**。它要求 `-a <已生成的 slide deck id> --slide <序号>`，
     是对已有产物的**局部编辑**而非新产物，和「建本→加料→生成→下载」的骨架不兼容。
     将来若要支持，应该是第三种动作类型（局部修改），不是第十一种产物。
+11. **两个 wait 命令的超时退出码不同**，`ok_codes` 必须分开写。
+    源码核实（`exit_with_code` 就是 `raise SystemExit(exit_code)`，**不做任何映射**）：
+
+    | 命令 | 退出码 | 依据 |
+    |---|---|---|
+    | `source wait` | `0`=ready / `1`=missing 或处理失败 / **`2`=timeout** | `source_cmd.py` docstring |
+    | `artifact wait` | `0`=完成 / **`1`=超时**（也是 1） | `artifact_cmd.py` 的 `except TimeoutError: … exit_with_code(1)` |
+
+    我此前把 `artifact wait` 的 `ok_codes` 写成 `(0, 2)`，是把 `source wait` 的契约错套了
+    过来。当下**恰好无害**（2 永不出现，超时走 1 被判失败，行为正确），但是个陷阱：
+    一旦上游真返回 2，就会被当成功并去下载一个还不存在的产物。已改为 `(0,)`。
+
+    `source wait` 保持 `(0,)` 是**刻意的**：没索引完就去提问或生成只会拿到空结果白烧配额，
+    所以超时(2)也要判失败。
+
+    实测：mock 让 `artifact wait` 返回 2 → `status=failed`、`failed_at=7`、
+    **下载步骤未被执行**（改之前会被当成功继续下载）。
 
 复现核对：
 

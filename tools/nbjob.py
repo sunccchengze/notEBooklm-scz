@@ -368,7 +368,9 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
             label=f"等待重试后的 {opts['artifact_kind']} 完成",
             argv=_nb("artifact", "wait", "{task_id}", "-n", "{notebook_id}",
                      "--timeout", str(TIMEOUTS["audio_wait"])),
-            ok_codes=(0, 2), needs=["notebook_id", "task_id"],
+            # artifact wait 只有 0/1：超时也是 exit 1（artifact_cmd.py 的
+            # `except TimeoutError: … exit_with_code(1)`）。exit 2 只属于 source wait。
+            ok_codes=(0,), needs=["notebook_id", "task_id"],
         ))
         steps.append(_download_step(job, opts["artifact_kind"], aspec))
         return steps
@@ -387,6 +389,10 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
             label=f"等待资料[{i}] 索引完成",
             argv=_nb("source", "wait", f"{{source_{i}}}", "-n", "{notebook_id}",
                      "--timeout", str(TIMEOUTS["source_wait"])),
+            # source wait 的退出码契约与 artifact wait **不同**：
+            # 0=ready / 1=missing 或处理失败 / 2=timeout（source_cmd.py:970 docstring）。
+            # 这里刻意只接受 0 —— 没索引完就去提问或生成，只会拿到空结果白烧配额，
+            # 所以超时(2)也要判失败。别顺手改成 (0, 2)。
             ok_codes=(0,), needs=["notebook_id", f"source_{i}"],
         ))
 
@@ -474,7 +480,11 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
             label=f"等待 {job['kind']} 生成完成",
             argv=_nb("artifact", "wait", "{task_id}", "-n", "{notebook_id}",
                      "--timeout", str(spec["wait"])),
-            ok_codes=(0, 2), needs=["notebook_id", "task_id"],
+            # 同上：artifact wait 超时是 exit 1，不是 2。
+            # 此前写成 (0, 2) 是把 source wait 的退出码契约错套了过来 —— 当下无害
+            # （2 永不出现，超时走 1 判失败，行为正确），但一旦上游真返回 2，
+            # 就会被当成成功并去下载一个还不存在的产物。
+            ok_codes=(0,), needs=["notebook_id", "task_id"],
         ))
 
     # 7) 下载

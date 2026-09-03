@@ -156,4 +156,12 @@ NotebookLM 的回答和报告**不能未经核验直接当事实或生产代码�
 | `delivery.channel: "failed"` | 产物回传失败（多半是 `uploads.github.com` 不可达） | 看 `delivery.error`；小产物改走 Git，大产物换有出网的机器重跑 `ship` |
 | RPC protocol error | Google 改了接口 | 升级 notebooklm-py 版本 |
 
-Exit code 约定：`0` 成功 / `1` 错误 / `2` 超时（仅 wait 类命令）。
+Exit code 约定：`0` 成功 / `1` 错误。**注意两个 wait 命令的超时码不一样**
+（源码核实，`exit_with_code` 不做任何映射）：
+
+| 命令 | 超时退出码 | 依据 |
+|---|---|---|
+| `source wait` | **2** | `source_cmd.py` docstring：`0=ready, 1=missing or processing failed, 2=timeout` |
+| `artifact wait` | **1** | `artifact_cmd.py` 的 `except TimeoutError: … exit_with_code(1)` |
+
+所以别把「超时=2」当成通用规则套到 `artifact wait` 上 —— 它超时也是 1。
