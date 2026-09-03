@@ -61,6 +61,7 @@ KINDS: dict[str, dict[str, Any]] = {
         },
         "prompt_mode": "append-or-positional",   # custom 走位置参数，其余走 --append
         "needs_sources_for_gen": False,
+        "has_language": True,              # 上游 generate report 有 --language（实测）
     },
     "podcast": {
         "gen": ["generate", "audio"],
@@ -74,6 +75,7 @@ KINDS: dict[str, dict[str, Any]] = {
         },
         "prompt_mode": "positional",
         "needs_sources_for_gen": True,     # 上游：source-less 对 audio 会直接报错
+        "has_language": True,              # 上游 generate audio 有 --language（实测）
     },
     "slides": {
         "gen": ["generate", "slide-deck"],
@@ -87,6 +89,7 @@ KINDS: dict[str, dict[str, Any]] = {
         },
         "prompt_mode": "positional",
         "needs_sources_for_gen": False,
+        "has_language": True,              # 上游 generate slide-deck 有 --language（实测）
     },
     "quiz": {
         "gen": ["generate", "quiz"],

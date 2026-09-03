@@ -71,6 +71,32 @@ quiz 的 prompt 必须真的出现在 `generate quiz` 命令里（`prompt_mode` 
 这四条都曾经真的坏过，而且都是"命令照样跑、退出码照样 0、产物看着也正常"
 那一类 —— 只有断言到命令文本本身才拦得住。
 
+### 2.2 升级 CLI 之后必须跑契约检查
+
+```bash
+python3 tests/check_cli_contract.py     # 需要装好的 CLI；没装会明确跳过，不假装通过
+```
+
+`KINDS` 表里每一项（flag 名、枚举值、有没有 `--language`、prompt 走位置参数还是
+选项）都是照着某个版本的 CLI 手工填的。`requirements.txt` 钉 `>=0.8.1,<0.9`，
+所以 0.8.x 一升级这张表就可能悄悄过期。
+
+它和 §2.1 的分工：`run_tests.py` 离线、用 mock，验的是**我自己的执行逻辑**；
+本脚本读真实 `--help`，验的是**我的假设与上游是否还吻合**。两个都要跑。
+
+五组核对：option 名对得上真实 flag、枚举值逐字一致、`has_language` 与上游
+`--language` 的有无一致、`prompt_mode` 与 Usage 行的位置参数一致、
+`SOURCE_TYPES` 与 `source add --type` 一致。
+
+第四组是重点，因为它的失败最隐蔽：`quiz.prompt_mode` 曾被写成 `"none"`，
+而 `generate quiz` 的 Usage 行是 `[OPTIONS] [DESCRIPTION]` —— validate 全绿、
+命令照跑、退出码 0、产物也出来了，只是用户的 prompt 从未到达 CLI。
+本脚本会直接报出 `Usage 行里**有** DESCRIPTION，prompt 会被静默丢弃`。
+
+红了之后的判断依据：**上游真的改了** → 更新 `KINDS` 表并同步
+`docs/arena-agent.md` §8；**上游没改而这里红了** → 说明表本来就填错了。
+不要因为想让它变绿就放宽断言。
+
 ## 3. 硬规矩
 
 ### 3.1 凭据
