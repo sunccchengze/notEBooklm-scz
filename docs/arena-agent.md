@@ -305,6 +305,21 @@ NotesAPI.create(notebook_id, title, content) -> Note
 
     实测：mock 让 `artifact wait` 返回 2 → `status=failed`、`failed_at=7`、
     **下载步骤未被执行**（改之前会被当成功继续下载）。
+12. **`source add` 必须显式传 `--type`**，不能依赖上游的自动判别。
+    `Usage: notebooklm source add [OPTIONS] CONTENT`，`--type [url|text|file|youtube]`
+    的帮助文本写着 "Source type is auto-detected"。我的枚举与它**逐字一致**
+    （0.8.2 实测；`requirements.txt` 钉 `>=0.8.1,<0.9`，0.8.1 侧的 venv 已不在，未复核）。
+
+    但同一段帮助文本记载了误判后果：
+    > A path-shaped argument that does not exist on disk is still ingested as
+    > **inline text** but a stderr warning is emitted; pass `--type text` to suppress.
+
+    即声明成 `file` 的资料若路径写错，会被**静默降级成内联文本**而不是报错。
+    于是生成照跑、退出码为 0、产物看着也正常 —— 但依据的是那串路径字符串本身。
+    工单里既然已经声明了 `type`，就交下去，别让 CLI 猜。
+
+    我此前只把 `type` 用在 label 里，从未传进命令。已修，并在回归套件加了断言
+    （回退该修复 → 9 条红）。
 
 复现核对：
 

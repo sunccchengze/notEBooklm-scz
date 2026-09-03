@@ -248,6 +248,28 @@ def main() -> int:
           bool(prompt) and any(prompt in ln for ln in gen_lines),
           f"prompt={prompt[:30]!r}；命令行={gen_lines[:1]}")
 
+    # ── 8. 声明的 source type 必须真的传进命令 ────────────────────
+    # 曾因 source add 漏传 --type，全靠上游启发式自动判别。而上游帮助文本记载：
+    # path-shaped 的值若在磁盘上不存在，会被**静默降级成 inline text**只发个
+    # stderr 警告 —— 生成照跑，但依据的是那串路径字符串本身，产物看着正常却是错的。
+    print("\n【8】声明的 source type 必须出现在 source add 命令里")
+    for sid, _kind, _ch in SAMPLES:
+        j = f"jobs/samples/{sid}.job.json"
+        job = json.loads((tmp / j).read_text(encoding="utf-8"))
+        srcs = job.get("sources") or []
+        if not srcs:
+            continue
+        p = run(tmp, "plan", j)
+        add_lines = [ln for ln in p.stdout.splitlines() if "source add" in ln]
+        if len(add_lines) != len(srcs):
+            check(f"{sid} source add 行数与 sources 数一致", False,
+                  f"期望 {len(srcs)} 行，实际 {len(add_lines)}")
+            continue
+        bad = [s["type"] for s, ln in zip(srcs, add_lines)
+               if f"--type {s['type']}" not in ln]
+        check(f"{sid} 每条 source 都带 --type",
+              not bad, f"缺 --type 的类型: {bad}；命令={add_lines[:1]}")
+
     shutil.rmtree(tmp, ignore_errors=True)
 
     print(f"\n{'='*56}\n断言：通过 {PASS} / 失败 {FAIL}")

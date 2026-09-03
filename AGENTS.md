@@ -62,10 +62,14 @@ download 分支只 echo 了裸字符串 `downloaded`（不是 JSON），形状�
 标了出处行号。**上游升级后若某条断言变红，先对照那些行号判断是 mock 该更新
 还是代码该改** —— 不要为了让测试变绿而直接放宽断言。
 
-套件里还包含三条针对已知回归点的断言，别删：
+套件里还包含四条针对已知回归点的断言，别删：
 `captured.artifact_file` 必须是 str（上面那个 bug）、
 `artifact wait` 返回 exit 2 必须判失败且不执行下载（退出码契约）、
-quiz 的 prompt 必须真的出现在 `generate quiz` 命令里（`prompt_mode` 回归）。
+quiz 的 prompt 必须真的出现在 `generate quiz` 命令里（`prompt_mode` 回归）、
+每条 source 的声明 `type` 必须真的传成 `--type`（工单字段漏传给 CLI）。
+
+这四条都曾经真的坏过，而且都是"命令照样跑、退出码照样 0、产物看着也正常"
+那一类 —— 只有断言到命令文本本身才拦得住。
 
 ## 3. 硬规矩
 

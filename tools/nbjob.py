@@ -376,10 +376,21 @@ def build_plan(job: dict[str, Any]) -> list[Step]:
         return steps
 
     # 2) 加资料（每条一个 source_id）
+    #
+    # --type 必须显式传。上游 `source add` 会自动判别类型，但那是启发式，
+    # 而帮助文本明确记载了误判后果：
+    #   "A path-shaped argument that does not exist on disk is still ingested
+    #    as inline text but a stderr warning is emitted; pass --type text
+    #    to suppress."
+    # 即声明成 file 的资料若路径写错，会被**静默降级成内联文本**而不是报错 ——
+    # 于是生成会照跑，但依据的是那串路径字符串本身，产物看起来正常却是错的。
+    # 工单里已经声明了 type，就把它交下去，别让 CLI 猜。
+    # 枚举与上游逐字一致：url | text | file | youtube（0.8.2 实测）。
     for i, s in enumerate(job.get("sources") or []):
         steps.append(Step(
             label=f"添加资料[{i}] {s['type']}: {s['value'][:70]}",
-            argv=_nb("source", "add", s["value"], "-n", "{notebook_id}", "--json"),
+            argv=_nb("source", "add", s["value"], "--type", s["type"],
+                     "-n", "{notebook_id}", "--json"),
             capture=f"source_{i}", jq_path="source.id", needs=["notebook_id"],
         ))
 
