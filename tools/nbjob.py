@@ -133,7 +133,9 @@ KINDS: dict[str, dict[str, Any]] = {
         "prompt_mode": "positional",
         "needs_sources_for_gen": False,
         "has_language": True,
-        "extra": "style_prompt",           # --style-prompt，仅 --style custom 时有意义
+        # --style-prompt：按上游帮助文本应配 --style custom；非 custom 时效果未经验证，
+        # 故由 validate 拦下（本地策略，不是上游会拒）
+        "extra": "style_prompt",
     },
     "infographic": {
         "gen": ["generate", "infographic"],
@@ -282,10 +284,16 @@ def validate(job: dict[str, Any]) -> None:
         # 上游坑：--append 在 --format custom 下被静默忽略，prompt 必须走位置参数
         _need(bool(prompt or prompt_file), "generate.format=custom 时必须给 prompt 或 prompt_file")
 
-    # video 的 --style-prompt 只在 --style custom 下才有意义
+    # video 的 --style-prompt：上游 CLI 其实**无条件透传**（generate_cmd.py 里对它
+    # 没有任何分支/校验，ArtifactsAPI.generate_video 也无条件接收），只有帮助文本
+    # 写着 "Use 'custom' with --style-prompt"。所以「非 custom 时会被忽略」是未经验证的
+    # 推断 —— 这里拦下来是**本地策略**：宁可让工单显式表达意图，也不要发一个
+    # 效果不明的参数出去。
     if spec.get("extra") == "style_prompt" and opts.get("style_prompt"):
         _need(opts.get("style") == "custom",
-              "generate.style_prompt 只在 generate.style=custom 时生效，其它风格下会被忽略")
+              "generate.style_prompt 按上游帮助文本应配 generate.style=custom 使用；"
+              "其它风格下效果未知（CLI 会照传，但服务端如何处理未经验证），"
+              "要用就显式写 style=custom")
 
     for i, q in enumerate(job.get("ask") or []):
         _need(isinstance(q, str) and q.strip(), f"ask[{i}] 必须是非空字符串")

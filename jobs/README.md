@@ -158,7 +158,7 @@ ARTIFACT_ID 不变，`poll` / `wait` 继续对它有效。
 { "format": "explainer",         // explainer | brief | cinematic | short
   "style": "whiteboard",         // auto | custom | classic | whiteboard | kawaii |
                                  // anime | watercolor | retro-print | heritage | paper-craft
-  "style_prompt": null,          // 仅 style=custom 时生效，其它风格下会被忽略（校验会拦）
+  "style_prompt": null,          // 配 style=custom 用；给了它而 style≠custom 会被校验拦下
   "language": "zh_Hans",
   "prompt": "某个角度" }          // 走位置参数
 ```

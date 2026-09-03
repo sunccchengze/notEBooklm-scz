@@ -262,11 +262,24 @@ NotesAPI.create(notebook_id, title, content) -> Note
    `json_output_response({"mind_map": …, "note_id": …, "kind": …})` 读出来的，不是猜的。
 5. **`data-table` 没有任何枚举选项**，DESCRIPTION 必填 → `prompt_mode: "required-positional"`，
    缺 prompt 的工单在校验阶段就被拦。
+   依据不再只是转述 SKILL.md，而是源码 + 实跑：`generate_cmd.py:792` 调
+   `resolve_prompt(description, prompt_file, "description", required=True)`，
+   而其余八种（audio/video/slide-deck/quiz/flashcards/infographic/report）
+   调的是不带 `required` 的版本。直接调该函数实测：
+   `required=True` 且两者皆空 → `UsageError: Provide a description argument or --prompt-file.`；
+   `required=False` 同样输入 → 返回 `''`。
+   顺带证实了 `prompt` 与 `prompt_file` 的互斥规则与本地校验层**逐字一致**
+   （`Cannot use both the description argument and --prompt-file. Choose one.`）。
 6. **`download audio/video/infographic/data-table/mind-map` 都没有 `--format`**，
    所以这些 kind 的 `KINDS` 里没有 `download_format`，下载段不会拼这个 flag ——
    而 slide-deck / quiz / flashcards 有。
-7. **`--style-prompt` 只在 `--style custom` 下有意义** → 校验层直接拦，
-   不让 Agent 写一个会被静默忽略的参数。
+7. **`--style-prompt` 配 `--style custom` 使用** → 校验层直接拦。
+   注意这条的依据**弱于**其余各条：上游 `generate_cmd.py` 的 video 命令体对
+   `style_prompt` **没有任何分支、校验或警告**，`ArtifactsAPI.generate_video(...)`
+   也无条件接收它 —— 也就是说 CLI 会照传。唯一依据是 `--style` 的帮助文本
+   `Use 'custom' with --style-prompt`。
+   所以「非 custom 时会被忽略」是**未经验证的推断**（服务端行为，沙箱内无法证实）。
+   拦下来是本地策略：宁可让工单显式表达意图，也不发一个效果不明的参数。
 8. **`artifact retry` 不带 `--wait` 时返回 `{task_id, status, url, error, error_code}`**
    —— 源码 `cli/artifact_cmd.py:691` 核实（带 `--wait` 时键名换成 `artifact_id`）。
    取 `task_id` 正好契合既有 capture 模式，所以 `retry_artifact` 不需要新的取值路径。
