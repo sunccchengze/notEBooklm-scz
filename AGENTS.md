@@ -33,11 +33,15 @@
 **不管哪条路线，Agent 侧的动作是一样的：写工单。** 区别只在于谁来执行。
 所以 Agent 不需要判断自己在哪条路线上 —— 写完工单，能直连就直连，不能就交出去。
 
-在 Google 不可达时，你**唯一**能做的自证是：
+在 Google 不可达时，你能做的离线自证有两条：
 
 ```bash
 python3 tools/nbjob.py plan jobs/pending/<id>.job.json    # 不碰网络，只打印将执行的命令
+python3 tools/nbjob.py validate jobs/pending/<id>.job.json # 只校验工单合法性
 ```
+
+`ship --dry-run` 也不碰网络（只判定产物该走 Git 还是 Release），但它要的是
+`execute` 产出的 result 文件，所以在完全跑不通的环境里用不上。
 
 ## 3. 硬规矩
 
@@ -71,7 +75,9 @@ python3 tools/nbjob.py plan jobs/pending/<id>.job.json    # 不碰网络，只�
 | 视频 | 15–45min | 2700s |
 
 **任务失败时不要重试 `generate`** —— 那会创建重复产物、白烧配额。先
-`artifact list -n <nb> --json` 看那个 id 的真实状态。
+`artifact list -n <nb> --json` 看那个 id 的真实状态。确认是产物本身失败后，
+用 `retry_artifact` 工单**原地重试**（ARTIFACT_ID 不变，`poll`/`wait` 继续有效），
+不要重发 `generate`。样例见 `jobs/samples/retry-demo.job.json`。
 
 ### 3.5 限流分级（上游记载）
 
@@ -101,14 +107,23 @@ NotebookLM 的回答和报告**不能未经核验直接当事实或生产代码�
 ## 4. 推荐工作流
 
 1. `./scripts/doctor.sh --json` —— 确认环境。
-2. `./scripts/nb list --json` —— **优先复用已有笔记本**，别动不动新建（配额有限）。
-3. 写工单到 `jobs/pending/<id>.job.json`，格式见 [jobs/README.md](jobs/README.md)。
-4. `python3 tools/nbjob.py plan <工单>` —— 自证命令序列正确。
-5. 路线 A：`python3 tools/nbjob.py execute <工单>`。
+2. 写工单到 `jobs/pending/<id>.job.json`，格式见 [jobs/README.md](jobs/README.md)。
+   **优先复用已有笔记本**（配额有限）：只给 `notebook.title` 时，执行器会自己
+   `list --json` 找精确同名的本子，命中即复用、没命中才建 —— 不用你手工查。
+   已经知道 id 就直接给 `notebook.id`，那连查询都省了。
+3. `python3 tools/nbjob.py plan <工单>` —— 自证命令序列正确。
+4. 路线 A：`python3 tools/nbjob.py execute <工单>`。
    路线 B：`git push`，等 worker 回写 `jobs/done/<id>.result.json`。
-6. 读结果的 `status` / `answers` / `captured`，把产物落到 `out/`。
+5. 读结果的 `status` / `answers` / `captured` / `artifact`。
+6. 读 `delivery` 段决定怎么拿产物：`channel: "git"` → `git pull` 后在 `out/` 里；
+   `channel: "release"` → 去 `delivery.url` 下载；`"failed"` → 看 `delivery.error`。
+   路线 B 上 worker 已经调过 `ship`；路线 A 上你自己调：
+   `python3 tools/nbjob.py ship jobs/done/<id>.result.json`。
 7. 回看来源原文核验：`./scripts/nb source fulltext <source_id> -f markdown`。
 8. 跑测试、看 `git diff`，再决定是否提交。
+
+**产物生成失败时**：不要重跑 `generate`（见 §3.4）。改用 `retry_artifact` 工单原地重试 ——
+它保留原 ARTIFACT_ID，不造重复产物、不白烧配额。样例见 `jobs/samples/retry-demo.job.json`。
 
 ## 5. 提问的技巧（实测有效，来自 qiaomu 项目）
 
@@ -136,8 +151,9 @@ NotebookLM 的回答和报告**不能未经核验直接当事实或生产代码�
 | `notebooklm.google.com` → 000 | 沙箱出网被切 | 走路线 B |
 | "No notebook context" | 没传 `-n` | 补上显式 notebook id |
 | "No result found for RPC ID" | 限流 | 等 5–10 分钟 |
-| `GENERATION_FAILED` | Google 限流 | 等，别重试 generate |
+| `GENERATION_FAILED` | Google 限流 | 等，别重发 `generate`；改用 `retry_artifact` 工单原地重试 |
 | 下载失败 | 生成未完成 | `artifact list -n <nb> --json` 查那个 id |
+| `delivery.channel: "failed"` | 产物回传失败（多半是 `uploads.github.com` 不可达） | 看 `delivery.error`；小产物改走 Git，大产物换有出网的机器重跑 `ship` |
 | RPC protocol error | Google 改了接口 | 升级 notebooklm-py 版本 |
 
 Exit code 约定：`0` 成功 / `1` 错误 / `2` 超时（仅 wait 类命令）。
